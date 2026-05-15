@@ -14,8 +14,6 @@ mockk = "1.14.2"
 turbine = "1.2.0"
 kotlinx-datetime = "0.6.2"
 mockwebserver = "4.12.0"
-anthropic-sdk = "0.11"
-openai-client = "4.0.1"
 activity-compose = "1.10.1"
 core-ktx = "1.16.0"
 lifecycle = "2.9.0"
@@ -36,9 +34,6 @@ kotlinx-datetime = { group = "org.jetbrains.kotlinx", name = "kotlinx-datetime",
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 okhttp-sse = { group = "com.squareup.okhttp3", name = "okhttp-sse", version.ref = "okhttp" }
 okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "mockwebserver" }
-
-anthropic-sdk = { group = "com.xemantic.anthropic", name = "anthropic-sdk-kotlin", version.ref = "anthropic-sdk" }
-openai-client = { group = "com.aallam.openai", name = "openai-client", version.ref = "openai-client" }
 
 hilt-core = { group = "com.google.dagger", name = "hilt-core", version.ref = "hilt" }
 hilt-compiler = { group = "com.google.dagger", name = "hilt-compiler", version.ref = "hilt" }
