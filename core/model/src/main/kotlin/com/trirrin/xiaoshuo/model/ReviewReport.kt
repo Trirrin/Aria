@@ -10,6 +10,8 @@ data class ReviewReport(
     val passed: Boolean,
     val retryCount: Int = 0,
     val status: ReviewStatus = ReviewStatus.PENDING_DECISION,
+    val qualityScore: Int = 10,
+    val qualityIssues: List<String> = emptyList(),
 )
 
 @Serializable
@@ -17,6 +19,7 @@ enum class ReviewStatus {
     PENDING_DECISION,
     ACCEPTED,
     NEEDS_RETRY,
+    NEEDS_POLISH,
     MANUAL_EDIT,
     APPROVED,
 }

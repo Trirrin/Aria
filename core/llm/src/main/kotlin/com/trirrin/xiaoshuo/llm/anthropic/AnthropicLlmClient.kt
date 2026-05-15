@@ -119,7 +119,7 @@ class AnthropicLlmClient(
         val body = buildJsonObject {
             put("model", request.model)
             put("max_tokens", request.maxTokens)
-            put("system", request.systemPrompt)
+            put("system", buildSystemPrompt(request))
             put("messages", messagesArray)
             put("temperature", request.temperature)
             if (request.stopSequences.isNotEmpty()) {
@@ -137,6 +137,19 @@ class AnthropicLlmClient(
             .addHeader("content-type", "application/json")
             .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
             .build()
+    }
+
+    private fun buildSystemPrompt(request: LlmRequest): JsonElement {
+        if (!request.cacheableSystemPrompt) return JsonPrimitive(request.systemPrompt)
+        return buildJsonArray {
+            add(buildJsonObject {
+                put("type", "text")
+                put("text", request.systemPrompt)
+                put("cache_control", buildJsonObject {
+                    put("type", "ephemeral")
+                })
+            })
+        }
     }
 
     private fun handleResponse(response: Response, requestModel: String): LlmResponse {

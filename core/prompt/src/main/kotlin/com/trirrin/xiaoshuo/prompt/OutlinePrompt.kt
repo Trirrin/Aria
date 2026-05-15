@@ -19,7 +19,7 @@ class OutlinePrompt : PromptTemplate<OutlineInput, NovelOutline> {
     private val json = Json { ignoreUnknownKeys = true }
 
     override fun buildSystemPrompt(): String = """
-You are a master novelist and plot architect with deep expertise in ${'$'}GENRE fiction structure.
+You are a master novelist and plot architect with deep expertise in fiction structure.
 
 Your task is to create a detailed novel outline from a given concept. The outline must include:
 

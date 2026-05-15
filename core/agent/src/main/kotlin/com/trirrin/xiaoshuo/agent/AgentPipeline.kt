@@ -21,6 +21,7 @@ sealed class PipelineEvent {
     data class SceneTextComplete(val text: String, val wordCount: Int) : PipelineEvent()
     data class ReviewComplete(val result: AgentResult.ReviewResult) : PipelineEvent()
     data class BibleUpdated(val bible: NovelBible) : PipelineEvent()
+    data class RollingSummaryUpdated(val summary: String) : PipelineEvent()
     data class UsageRecorded(val usage: AgentUsage) : PipelineEvent()
     data class Error(val message: String, val cause: Throwable? = null) : PipelineEvent()
     data class Step(val agentName: String, val description: String) : PipelineEvent()
@@ -48,6 +49,7 @@ class AgentPipeline(
     private val reviewAgent: ReviewAgent,
     private val continuityAgent: ContinuityAgent,
     private val bibleMerger: BibleMerger,
+    private val rollingSummaryAgent: RollingSummaryAgent? = null,
     private val config: PipelineConfig? = null,
 ) {
 
@@ -136,6 +138,8 @@ class AgentPipeline(
         scene: Scene,
         previousSceneEnding: String? = null,
         reviewFeedback: String? = null,
+        rollingChapterSummary: String? = null,
+        referenceProseStyle: String? = null,
     ): Flow<PipelineEvent> = flow {
         emit(PipelineEvent.Step("scene_expansion", "Generating scene ${scene.order} text"))
 
@@ -145,9 +149,11 @@ class AgentPipeline(
                 chapter = chapter,
                 scene = scene,
                 previousSceneEnding = trimContinuityContext(previousSceneEnding),
+                rollingChapterSummary = rollingChapterSummary,
+                referenceProseStyle = referenceProseStyle,
             )
         } else {
-            regenerateScene(novel, chapter, scene, previousSceneEnding, reviewFeedback)
+            regenerateScene(novel, chapter, scene, previousSceneEnding, reviewFeedback, rollingChapterSummary, referenceProseStyle)
         }
 
         val text = when (result) {
@@ -166,7 +172,7 @@ class AgentPipeline(
             }
         }
 
-        finishSceneText(novel, chapter, scene, text)
+        finishSceneText(novel, chapter, scene, text, rollingChapterSummary)
     }
 
     fun finalizeSceneText(
@@ -174,8 +180,9 @@ class AgentPipeline(
         chapter: Chapter,
         scene: Scene,
         text: String,
+        rollingChapterSummary: String? = null,
     ): Flow<PipelineEvent> = flow {
-        finishSceneText(novel, chapter, scene, text)
+        finishSceneText(novel, chapter, scene, text, rollingChapterSummary)
     }
 
     private suspend fun FlowCollector<PipelineEvent>.finishSceneText(
@@ -183,6 +190,7 @@ class AgentPipeline(
         chapter: Chapter,
         scene: Scene,
         text: String,
+        rollingChapterSummary: String? = null,
     ) {
         val synopsis = chapter.synopsis ?: return
         val breakdown = synopsis.sceneBreakdowns.find { it.sceneIndex == scene.order } ?: return
@@ -202,6 +210,8 @@ class AgentPipeline(
             else -> return
         }
 
+        updateRollingSummary(rollingChapterSummary, breakdown.synopsis, text)
+
         emit(PipelineEvent.Step("continuity", "Extracting facts for Bible update"))
         val continuityResult = continuityAgent.extract(
             sceneText = text,
@@ -220,6 +230,23 @@ class AgentPipeline(
             is AgentResult.Error -> {
                 emit(PipelineEvent.Error("Continuity extraction failed: ${continuityResult.message}"))
             }
+            else -> Unit
+        }
+    }
+
+    private suspend fun FlowCollector<PipelineEvent>.updateRollingSummary(
+        previousSummary: String?,
+        sceneSynopsis: String,
+        sceneText: String,
+    ) {
+        val agent = rollingSummaryAgent ?: return
+        emit(PipelineEvent.Step("rolling_chapter_summary", "Updating chapter tension summary"))
+        when (val result = agent.update(previousSummary, sceneSynopsis, sceneText)) {
+            is AgentResult.RollingSummaryResult -> {
+                result.usage?.let { emit(PipelineEvent.UsageRecorded(it)) }
+                emit(PipelineEvent.RollingSummaryUpdated(result.summary))
+            }
+            is AgentResult.Error -> emit(PipelineEvent.Error("Rolling summary failed: ${result.message}", result.cause))
             else -> Unit
         }
     }
@@ -258,6 +285,7 @@ class AgentPipeline(
             model = chapterSynopsisAgent.model,
             maxTokens = 4096,
             temperature = 0.7,
+            cacheableSystemPrompt = true,
         )
         return try {
             val response = chapterSynopsisAgent.llmClient.complete(request)
@@ -285,6 +313,8 @@ class AgentPipeline(
         scene: Scene,
         previousSceneEnding: String?,
         reviewFeedback: String,
+        rollingChapterSummary: String?,
+        referenceProseStyle: String?,
     ): AgentResult {
         val synopsis = chapter.synopsis ?: return AgentResult.Error("Chapter has no synopsis")
         val breakdown = synopsis.sceneBreakdowns.find { it.sceneIndex == scene.order }
@@ -298,6 +328,8 @@ class AgentPipeline(
             relevantWorldRules = novel.bible.worldRules,
             previousSceneEnding = trimContinuityContext(previousSceneEnding),
             styleGuide = novel.styleGuide,
+            rollingChapterSummary = rollingChapterSummary,
+            referenceProseStyle = referenceProseStyle,
         )
         val userPrompt = buildString {
             append(prompt.buildUserPrompt(input))
@@ -313,6 +345,7 @@ class AgentPipeline(
             model = sceneExpansionAgent.model,
             maxTokens = breakdown.targetWordCount * 2,
             temperature = 0.85,
+            cacheableSystemPrompt = true,
         )
         return try {
             val response = sceneExpansionAgent.llmClient.complete(request)
@@ -336,6 +369,8 @@ class AgentPipeline(
         chapter: Chapter,
         scene: Scene,
         previousSceneEnding: String? = null,
+        rollingChapterSummary: String? = null,
+        referenceProseStyle: String? = null,
     ): Flow<PipelineEvent> = flow {
         var inputTokens: Int? = null
         var outputTokens: Int? = null
@@ -344,6 +379,8 @@ class AgentPipeline(
             chapter = chapter,
             scene = scene,
             previousSceneEnding = trimContinuityContext(previousSceneEnding),
+            rollingChapterSummary = rollingChapterSummary,
+            referenceProseStyle = referenceProseStyle,
         ).collect { chunk ->
             if (chunk.delta.isNotEmpty()) {
                 emit(PipelineEvent.SceneTextDelta(chunk.delta))
@@ -370,12 +407,16 @@ class AgentPipeline(
         chapter: Chapter,
         scene: Scene,
         previousSceneEnding: String? = null,
+        rollingChapterSummary: String? = null,
+        referenceProseStyle: String? = null,
     ): Flow<String> {
         return sceneExpansionAgent.stream(
             novel = novel,
             chapter = chapter,
             scene = scene,
             previousSceneEnding = trimContinuityContext(previousSceneEnding),
+            rollingChapterSummary = rollingChapterSummary,
+            referenceProseStyle = referenceProseStyle,
         )
     }
 }

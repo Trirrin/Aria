@@ -37,7 +37,7 @@ class BibleFilterTest {
 
         val filtered = BibleFilter(tokenBudget = 500).filterRelevant(
             bible = bible,
-            context = BibleFilterContext(sceneSynopsis = "Mira returns to the Glass City with the prism."),
+            context = BibleFilterContext(sceneSynopsis = "Mira returns to the Glass City with the prism that remembers promises."),
         )
 
         assertEquals(listOf("Mira", "Jon"), filtered.characters.map { it.name })
@@ -51,6 +51,66 @@ class BibleFilterTest {
         val bible = NovelBible(
             characters = listOf(
                 CharacterEntry(name = "Mira", description = "x".repeat(400)),
+                CharacterEntry(name = "Jon", description = "short"),
+            ),
+        )
+
+        val filtered = BibleFilter(tokenBudget = 10).filterRelevant(
+            bible = bible,
+            context = BibleFilterContext(sceneSynopsis = "Mira and Jon argue."),
+        )
+
+        assertEquals(listOf("Jon"), filtered.characters.map { it.name })
+    }
+
+    @Test
+    fun `filter does not match common word substrings`() {
+        val bible = NovelBible(
+            characters = listOf(
+                CharacterEntry(name = "Mira", description = "A courier from the glass city"),
+                CharacterEntry(name = "Theron", description = "A king in a distant court"),
+                CharacterEntry(name = "Lookout", description = "A sentry unrelated to this scene"),
+            ),
+            worldRules = listOf(
+                WorldRule(category = "Court", rule = "Kings settle disputes by candle vote"),
+            ),
+        )
+
+        val filtered = BibleFilter(tokenBudget = 500).filterRelevant(
+            bible = bible,
+            context = BibleFilterContext(sceneSynopsis = "Mira looks for a way through the rain."),
+        )
+
+        assertEquals(listOf("Mira"), filtered.characters.map { it.name })
+        assertTrue(filtered.worldRules.isEmpty())
+    }
+
+    @Test
+    fun `filter returns empty rules and themes when there is no hit`() {
+        val bible = NovelBible(
+            characters = listOf(CharacterEntry(name = "Mira")),
+            worldRules = listOf(WorldRule(category = "Magic", rule = "Mirrors remember promises")),
+            themes = listOf(com.trirrin.xiaoshuo.model.ThemeEntry(name = "Inheritance", description = "Old debts repeat")),
+        )
+
+        val filtered = BibleFilter(tokenBudget = 500).filterRelevant(
+            bible = bible,
+            context = BibleFilterContext(sceneSynopsis = "Mira studies a street map."),
+        )
+
+        assertEquals(listOf("Mira"), filtered.characters.map { it.name })
+        assertTrue(filtered.worldRules.isEmpty())
+        assertTrue(filtered.themes.isEmpty())
+    }
+
+    @Test
+    fun `filter charges relationship text against budget`() {
+        val bible = NovelBible(
+            characters = listOf(
+                CharacterEntry(
+                    name = "Mira",
+                    relationships = listOf(Relationship("Jon", "x".repeat(200))),
+                ),
                 CharacterEntry(name = "Jon", description = "short"),
             ),
         )

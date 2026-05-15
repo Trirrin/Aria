@@ -35,7 +35,7 @@ class ChapterSynopsisAgent(
 
         val filterContext = BibleFilterContext(
             chapterSynopsis = brief.plotBeats,
-            characterNames = extractCharacterNames(brief.plotBeats),
+            characterNames = NameExtractor.extract(brief.plotBeats),
         )
         val relevantBible = bibleFilter.filterRelevant(novel.bible, filterContext)
 
@@ -56,6 +56,7 @@ class ChapterSynopsisAgent(
             model = model,
             maxTokens = 4096,
             temperature = 0.7,
+            cacheableSystemPrompt = true,
         )
 
         val response: LlmResponse = try {
@@ -79,11 +80,5 @@ class ChapterSynopsisAgent(
                 AgentResult.Error("Failed to parse synopsis: ${it.message}", it)
             },
         )
-    }
-
-    private fun extractCharacterNames(text: String): List<String> {
-        return text.split(Regex("[\\s.,!?;:\"'()\\[\\]{}\\-—–]+"))
-            .filter { it.length > 2 && it.first().isUpperCase() }
-            .distinct()
     }
 }

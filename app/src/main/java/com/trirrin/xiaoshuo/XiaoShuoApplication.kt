@@ -9,6 +9,7 @@ import com.trirrin.xiaoshuo.agent.ContinuityAgent
 import com.trirrin.xiaoshuo.agent.PipelineConfig
 import com.trirrin.xiaoshuo.agent.OutlineAgent
 import com.trirrin.xiaoshuo.agent.ReviewAgent
+import com.trirrin.xiaoshuo.agent.RollingSummaryAgent
 import com.trirrin.xiaoshuo.agent.SceneExpansionAgent
 import com.trirrin.xiaoshuo.data.GenerationSettings
 import com.trirrin.xiaoshuo.data.GenerationSettingsRepository
@@ -51,6 +52,7 @@ class AppContainer(application: Application) {
             reviewAgent = ReviewAgent(llmClient, settings.reviewModel),
             continuityAgent = ContinuityAgent(llmClient, settings.continuityModel),
             bibleMerger = BibleMerger(),
+            rollingSummaryAgent = RollingSummaryAgent(llmClient, settings.continuityModel),
             config = PipelineConfig(
                 outlineModel = settings.outlineModel,
                 synopsisModel = settings.synopsisModel,

@@ -45,7 +45,12 @@ sealed class AgentResult {
         val suggestedFixes: List<String>,
         val passed: Boolean,
         val usage: AgentUsage? = null,
-    ) : AgentResult()
+        val qualityScore: Int = 10,
+        val qualityIssues: List<String> = emptyList(),
+    ) : AgentResult() {
+        val needsPolish: Boolean = passed && qualityScore < 7
+    }
     data class ContinuityResult(val bibleDiff: BibleDiff, val usage: AgentUsage? = null) : AgentResult()
+    data class RollingSummaryResult(val summary: String, val usage: AgentUsage? = null) : AgentResult()
     data class Error(val message: String, val cause: Throwable? = null) : AgentResult()
 }

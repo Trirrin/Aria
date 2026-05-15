@@ -61,6 +61,79 @@ class LlmClientHttpTest {
     }
 
     @Test
+    fun `anthropic complete sends cacheable system prompt blocks when enabled`() = runTest {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """
+                    {
+                      "content": [{"type": "text", "text": "hello"}],
+                      "usage": {"input_tokens": 3, "output_tokens": 2},
+                      "model": "claude-test",
+                      "stop_reason": "end_turn"
+                    }
+                    """.trimIndent(),
+                ),
+        )
+
+        try {
+            val client = AnthropicLlmClient(
+                apiKey = "anthropic-key",
+                baseUrl = server.url("/").toString().trimEnd('/'),
+            )
+            client.complete(sampleRequest(model = "claude-test", cacheableSystemPrompt = true))
+            val recorded = server.takeRequest()
+            val body = json.parseToJsonElement(recorded.body.readUtf8()).jsonObject
+            val systemBlock = body["system"]?.jsonArray?.single()?.jsonObject
+
+            assertEquals("text", systemBlock?.get("type")?.jsonPrimitive?.content)
+            assertEquals("system prompt", systemBlock?.get("text")?.jsonPrimitive?.content)
+            assertEquals("ephemeral", systemBlock?.get("cache_control")?.jsonObject?.get("type")?.jsonPrimitive?.content)
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun `anthropic stream sends cacheable system prompt blocks when enabled`() = runTest {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/event-stream")
+                .setBody(
+                    """
+                    event: message_start
+                    data: {"type":"message_start","message":{"usage":{"input_tokens":7}}}
+
+                    event: message_stop
+                    data: {"type":"message_stop"}
+
+                    """.trimIndent(),
+                ),
+        )
+
+        try {
+            val client = AnthropicLlmClient(
+                apiKey = "anthropic-key",
+                baseUrl = server.url("/").toString().trimEnd('/'),
+            )
+            client.stream(sampleRequest(model = "claude-test", cacheableSystemPrompt = true)).toList()
+            val recorded = server.takeRequest()
+            val body = json.parseToJsonElement(recorded.body.readUtf8()).jsonObject
+            val systemBlock = body["system"]?.jsonArray?.single()?.jsonObject
+
+            assertEquals("ephemeral", systemBlock?.get("cache_control")?.jsonObject?.get("type")?.jsonPrimitive?.content)
+            assertEquals("true", body["stream"]?.jsonPrimitive?.content)
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
     fun `openai complete sends chat completions request and parses response`() = runTest {
         val server = MockWebServer()
         server.enqueue(
@@ -360,13 +433,14 @@ class LlmClientHttpTest {
         }
     }
 
-    private fun sampleRequest(model: String): LlmRequest {
+    private fun sampleRequest(model: String, cacheableSystemPrompt: Boolean = false): LlmRequest {
         return LlmRequest(
             systemPrompt = "system prompt",
             messages = listOf(LlmMessage(MessageRole.USER, "user prompt")),
             model = model,
             maxTokens = 32,
             temperature = 0.2,
+            cacheableSystemPrompt = cacheableSystemPrompt,
         )
     }
 }

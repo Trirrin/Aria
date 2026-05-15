@@ -700,6 +700,8 @@ class NovelWorkspaceViewModel(
         var persistedLength = 0
         var updatedBible = novel.bible
         var reviewReport: ReviewReport? = null
+        var rollingSummary: String? = null
+        val referenceProseStyle = latestApprovedStyleSample(scenes, scene)
 
         selectedChapterId.value = chapter.id
         selectedSceneId.value = scene.id
@@ -710,7 +712,14 @@ class NovelWorkspaceViewModel(
         workflow.update { it.copy(streamingSceneId = scene.id, streamingSceneText = "") }
 
         try {
-            pipeline.streamSceneEvents(novel, chapter, scene, previousSceneEnding).collect { event ->
+            pipeline.streamSceneEvents(
+                novel = novel,
+                chapter = chapter,
+                scene = scene,
+                previousSceneEnding = previousSceneEnding,
+                rollingChapterSummary = rollingSummary,
+                referenceProseStyle = referenceProseStyle,
+            ).collect { event ->
                 recordPipelineEvent(novel.id, settings, event)
                 if (event !is PipelineEvent.SceneTextDelta) return@collect
                 val delta = event.delta
@@ -730,11 +739,12 @@ class NovelWorkspaceViewModel(
             persistStreamedScene(scene, generatedText, SceneStatus.GENERATING)
             recordPipelineEvent(novel.id, settings, PipelineEvent.SceneTextComplete(generatedText, generatedWordCount))
 
-            pipeline.finalizeSceneText(novel, chapter, scene, generatedText).collect { event ->
+            pipeline.finalizeSceneText(novel, chapter, scene, generatedText, rollingSummary).collect { event ->
                 recordPipelineEvent(novel.id, settings, event)
                 when (event) {
                     is PipelineEvent.BibleUpdated -> updatedBible = event.bible
                     is PipelineEvent.ReviewComplete -> reviewReport = event.result.toReport(0)
+                    is PipelineEvent.RollingSummaryUpdated -> rollingSummary = event.summary
                     else -> Unit
                 }
             }
@@ -795,6 +805,16 @@ class NovelWorkspaceViewModel(
             ?.joinToString(" ")
     }
 
+    private fun latestApprovedStyleSample(scenes: List<Scene>, scene: Scene): String? {
+        return scenes
+            .filter { it.order < scene.order && it.status == SceneStatus.APPROVED && it.text.isNotBlank() }
+            .maxByOrNull { it.order }
+            ?.text
+            ?.split(Regex("\\s+"))
+            ?.take(100)
+            ?.joinToString(" ")
+    }
+
     private fun generateSelectedSceneConfirmed(reviewFeedback: String?, retryCount: Int?, busyMessage: String) {
         runPipelineStep(busyMessage) { novel, settings ->
             require(settings.apiKey.isNotBlank()) { "API key is required before generation" }
@@ -812,13 +832,23 @@ class NovelWorkspaceViewModel(
             var generatedWordCount = scene.wordCount
             var updatedBible = novel.bible
             var reviewReport: ReviewReport? = null
+            var rollingSummary: String? = null
+            val referenceProseStyle = latestApprovedStyleSample(scenes, scene)
 
             if (scene.text.isNotBlank()) {
                 saveSnapshot(novel.id, SNAPSHOT_SCENE, scene.id, "Scene before generation", scene)
             }
             novelRepository.upsertScene(scene.copy(status = SceneStatus.GENERATING))
             try {
-                pipeline.generateScene(novel, chapter, scene, previousSceneEnding, reviewFeedback = reviewFeedback).collect { event ->
+                pipeline.generateScene(
+                    novel = novel,
+                    chapter = chapter,
+                    scene = scene,
+                    previousSceneEnding = previousSceneEnding,
+                    reviewFeedback = reviewFeedback,
+                    rollingChapterSummary = rollingSummary,
+                    referenceProseStyle = referenceProseStyle,
+                ).collect { event ->
                     recordPipelineEvent(novel.id, settings, event)
                     when (event) {
                         is PipelineEvent.SceneTextComplete -> {
@@ -827,6 +857,7 @@ class NovelWorkspaceViewModel(
                         }
                         is PipelineEvent.BibleUpdated -> updatedBible = event.bible
                         is PipelineEvent.ReviewComplete -> reviewReport = event.result.toReport(retryCount ?: 0)
+                        is PipelineEvent.RollingSummaryUpdated -> rollingSummary = event.summary
                         else -> Unit
                     }
                 }
@@ -1084,6 +1115,7 @@ class NovelWorkspaceViewModel(
             is PipelineEvent.SceneTextComplete -> appendEvent("Scene text generated: ${event.wordCount} words")
             is PipelineEvent.ReviewComplete -> appendEvent("Review score: ${event.result.score}/10")
             is PipelineEvent.BibleUpdated -> appendEvent("Bible updated")
+            is PipelineEvent.RollingSummaryUpdated -> appendEvent("Rolling summary updated")
             is PipelineEvent.UsageRecorded -> appendEvent("Usage: ${event.usage.agentName} ${event.usage.inputTokens + event.usage.outputTokens} tokens")
             is PipelineEvent.Error -> setError(event.message)
             is PipelineEvent.SceneTextDelta -> Unit
@@ -1425,18 +1457,26 @@ private fun AgentResult.ReviewResult.toReport(retryCount: Int): ReviewReport {
         suggestedFixes = suggestedFixes,
         passed = passed,
         retryCount = retryCount,
-        status = ReviewStatus.PENDING_DECISION,
+        status = if (needsPolish) ReviewStatus.NEEDS_POLISH else ReviewStatus.PENDING_DECISION,
+        qualityScore = qualityScore,
+        qualityIssues = qualityIssues,
     )
 }
 
 private fun ReviewReport.toNotes(): String {
     return buildString {
         appendLine("Score: $score/10")
+        appendLine("Quality: $qualityScore/10")
         appendLine("Passed: $passed")
         if (issues.isNotEmpty()) {
             appendLine()
             appendLine("Issues:")
             issues.forEach { appendLine("- $it") }
+        }
+        if (qualityIssues.isNotEmpty()) {
+            appendLine()
+            appendLine("Quality issues:")
+            qualityIssues.forEach { appendLine("- $it") }
         }
         if (suggestedFixes.isNotEmpty()) {
             appendLine()
@@ -1449,12 +1489,18 @@ private fun ReviewReport.toNotes(): String {
 private fun ReviewReport.toFeedback(): String {
     return buildString {
         appendLine("Previous review score: $score/10")
+        appendLine("Previous prose quality score: $qualityScore/10")
         appendLine("Previous review passed: $passed")
         appendLine("Retry attempt: $retryCount")
         if (issues.isNotEmpty()) {
             appendLine()
             appendLine("Issues to fix:")
             issues.forEach { appendLine("- $it") }
+        }
+        if (qualityIssues.isNotEmpty()) {
+            appendLine()
+            appendLine("Quality issues to polish:")
+            qualityIssues.forEach { appendLine("- $it") }
         }
         if (suggestedFixes.isNotEmpty()) {
             appendLine()

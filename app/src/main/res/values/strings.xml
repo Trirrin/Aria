@@ -7,6 +7,7 @@
     <string name="status_ready">Ready</string>
 
     <string name="tab_library">Library</string>
+    <string name="tab_overview">Overview</string>
     <string name="tab_outline">Outline</string>
     <string name="tab_draft">Draft</string>
     <string name="tab_bible">Bible</string>
@@ -16,6 +17,7 @@
     <string name="section_novels">Novels</string>
     <string name="section_new_novel">New Novel</string>
     <string name="section_import_from_chat">Import From Chat</string>
+    <string name="section_project_overview">Project Overview</string>
     <string name="section_project">Project</string>
     <string name="section_outline">Outline</string>
     <string name="section_chapters">Chapters</string>

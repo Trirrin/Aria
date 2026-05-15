@@ -20,7 +20,7 @@ class OutlineAgent(
 
     suspend fun generate(input: OutlineInput): AgentResult {
         val request = LlmRequest(
-            systemPrompt = prompt.buildSystemPrompt().replace("$" + "GENRE", input.genre.label),
+            systemPrompt = prompt.buildSystemPrompt(),
             messages = listOf(LlmMessage(
                 com.trirrin.xiaoshuo.llm.MessageRole.USER,
                 prompt.buildUserPrompt(input),
@@ -28,6 +28,7 @@ class OutlineAgent(
             model = model,
             maxTokens = 8192,
             temperature = 0.8,
+            cacheableSystemPrompt = true,
         )
 
         val response: LlmResponse = try {

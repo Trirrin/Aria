@@ -23,6 +23,8 @@ class SceneExpansionAgent(
         chapter: Chapter,
         scene: Scene,
         previousSceneEnding: String? = null,
+        rollingChapterSummary: String? = null,
+        referenceProseStyle: String? = null,
     ): AgentResult {
         val synopsis = chapter.synopsis ?: return AgentResult.Error("Chapter has no synopsis")
         val breakdown = synopsis.sceneBreakdowns.find { it.sceneIndex == scene.order }
@@ -30,7 +32,7 @@ class SceneExpansionAgent(
 
         val filterContext = BibleFilterContext(
             sceneSynopsis = breakdown.synopsis,
-            characterNames = extractNames(breakdown.synopsis),
+            characterNames = NameExtractor.extract(breakdown.synopsis),
         )
         val relevantBible = bibleFilter.filterRelevant(novel.bible, filterContext)
 
@@ -42,6 +44,8 @@ class SceneExpansionAgent(
             relevantWorldRules = relevantBible.worldRules,
             previousSceneEnding = trimContinuityContext(previousSceneEnding),
             styleGuide = novel.styleGuide,
+            rollingChapterSummary = rollingChapterSummary,
+            referenceProseStyle = referenceProseStyle ?: scene.text.takeIf { scene.status == SceneStatus.APPROVED },
         )
 
         val request = LlmRequest(
@@ -50,6 +54,7 @@ class SceneExpansionAgent(
             model = model,
             maxTokens = breakdown.targetWordCount * 2,
             temperature = 0.85,
+            cacheableSystemPrompt = true,
         )
 
         return try {
@@ -76,8 +81,10 @@ class SceneExpansionAgent(
         chapter: Chapter,
         scene: Scene,
         previousSceneEnding: String? = null,
+        rollingChapterSummary: String? = null,
+        referenceProseStyle: String? = null,
     ): Flow<String> {
-        return streamChunks(novel, chapter, scene, previousSceneEnding).map { it.delta }
+        return streamChunks(novel, chapter, scene, previousSceneEnding, rollingChapterSummary, referenceProseStyle).map { it.delta }
     }
 
     suspend fun streamChunks(
@@ -85,6 +92,8 @@ class SceneExpansionAgent(
         chapter: Chapter,
         scene: Scene,
         previousSceneEnding: String? = null,
+        rollingChapterSummary: String? = null,
+        referenceProseStyle: String? = null,
     ): Flow<LlmChunk> {
         val synopsis = chapter.synopsis ?: throw IllegalStateException("Chapter has no synopsis")
         val breakdown = synopsis.sceneBreakdowns.find { it.sceneIndex == scene.order }
@@ -92,7 +101,7 @@ class SceneExpansionAgent(
 
         val filterContext = BibleFilterContext(
             sceneSynopsis = breakdown.synopsis,
-            characterNames = extractNames(breakdown.synopsis),
+            characterNames = NameExtractor.extract(breakdown.synopsis),
         )
         val relevantBible = bibleFilter.filterRelevant(novel.bible, filterContext)
 
@@ -104,6 +113,8 @@ class SceneExpansionAgent(
             relevantWorldRules = relevantBible.worldRules,
             previousSceneEnding = trimContinuityContext(previousSceneEnding),
             styleGuide = novel.styleGuide,
+            rollingChapterSummary = rollingChapterSummary,
+            referenceProseStyle = referenceProseStyle ?: scene.text.takeIf { scene.status == SceneStatus.APPROVED },
         )
 
         val request = LlmRequest(
@@ -112,14 +123,10 @@ class SceneExpansionAgent(
             model = model,
             maxTokens = breakdown.targetWordCount * 2,
             temperature = 0.85,
+            cacheableSystemPrompt = true,
         )
 
         return llmClient.stream(request)
     }
 
-    private fun extractNames(text: String): List<String> {
-        return text.split(Regex("[\\s.,!?;:\"'()\\[\\]{}\\-—–]+"))
-            .filter { it.length > 2 && it.first().isUpperCase() }
-            .distinct()
-    }
 }

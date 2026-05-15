@@ -34,6 +34,7 @@ class ContinuityAgent(
             model = model,
             maxTokens = 4096,
             temperature = 0.2,
+            cacheableSystemPrompt = true,
         )
 
         val response: LlmResponse = try {

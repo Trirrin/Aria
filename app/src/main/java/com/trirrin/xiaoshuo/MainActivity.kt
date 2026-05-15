@@ -6,7 +6,6 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,7 +19,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -35,6 +33,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
@@ -46,7 +45,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -55,7 +53,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.res.stringResource
@@ -82,11 +79,16 @@ import com.trirrin.xiaoshuo.model.BibleConflict
 import com.trirrin.xiaoshuo.model.ReviewReport
 import com.trirrin.xiaoshuo.model.Scene
 import com.trirrin.xiaoshuo.prompt.ChatImportPrompt
+import com.trirrin.xiaoshuo.ui.theme.XiaoShuoTheme
+import com.trirrin.xiaoshuo.ui.theme.WarningAmber
+import com.trirrin.xiaoshuo.ui.theme.WarningAmberBg
+import com.trirrin.xiaoshuo.ui.theme.WarningAmberBorder
 import java.io.File
 import java.util.Locale
 
 private enum class WorkspaceTab(val labelRes: Int) {
     Library(R.string.tab_library),
+    Overview(R.string.tab_overview),
     Outline(R.string.tab_outline),
     Draft(R.string.tab_draft),
     Bible(R.string.tab_bible),
@@ -140,23 +142,6 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-}
-
-@Composable
-private fun XiaoShuoTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = lightColorScheme(
-            primary = Color(0xFF176B5B),
-            secondary = Color(0xFF8A5A2D),
-            tertiary = Color(0xFF375A7A),
-            background = Color(0xFFF7F8F3),
-            surface = Color(0xFFFFFFFF),
-            surfaceVariant = Color(0xFFE7EDE5),
-            outline = Color(0xFFC9D2C6),
-            onSurface = Color(0xFF1F241F),
-        ),
-        content = content,
-    )
 }
 
 @Composable
@@ -217,7 +202,8 @@ private fun XiaoShuoApp(
         ) {
             ScrollableTabRow(
                 selectedTabIndex = selectedTab,
-                edgePadding = 12.dp,
+                edgePadding = 16.dp,
+                divider = { HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant) },
             ) {
                 WorkspaceTab.entries.forEachIndexed { index, tab ->
                     Tab(
@@ -234,6 +220,7 @@ private fun XiaoShuoApp(
             ) {
                 when (WorkspaceTab.entries[selectedTab]) {
                     WorkspaceTab.Library -> LibraryScreen(state, onCreateNovel, onImportFromChat, onSelectNovel)
+                    WorkspaceTab.Overview -> OverviewScreen(state)
                     WorkspaceTab.Outline -> OutlineScreen(state, onGenerateOutline, onSaveOutline)
                     WorkspaceTab.Draft -> DraftScreen(
                         state = state,
@@ -297,85 +284,92 @@ private fun OverwriteConfirmationDialog(
 
 @Composable
 private fun TopBar(state: NovelWorkspaceUiState) {
-    val context = LocalContext.current
-    val novel = state.selectedNovel
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        FlowRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+    Surface(tonalElevation = 2.dp) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Column(modifier = Modifier.weight(1f).widthIn(min = 180.dp)) {
-                Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Text(
-                    text = novel?.title ?: stringResource(R.string.no_novel_selected),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.68f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            StatusPill(novel?.status?.name ?: stringResource(R.string.status_empty))
-        }
-        if (novel != null) {
-            val stats = computeProjectStats(novel, state.chapters, state.allScenes)
-            val usage = state.tokenUsage.toUsageSummary()
-            MetricStrip(
-                stringResource(R.string.metric_words) to stats.totalWords.toString(),
-                stringResource(R.string.metric_scenes) to "${stats.generatedScenes}/${stats.sceneCount}",
-                stringResource(R.string.metric_edited) to stats.editedScenes.toString(),
-                stringResource(R.string.metric_approved) to stats.approvedScenes.toString(),
-                stringResource(R.string.metric_cost) to usage.costLabel,
-                stringResource(R.string.metric_bible) to stats.bibleEntryCount.toString(),
-            )
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                val hasDraftText = state.allScenes.any { it.text.isNotBlank() }
-                OutlinedButton(
-                    onClick = {
-                        shareText(
-                            context = context,
-                            chooserTitle = context.getString(R.string.export_markdown),
-                            mimeType = "text/markdown",
-                            title = "${novel.title}.md",
-                            text = buildMarkdownManuscript(novel, state.chapters, state.allScenes),
-                        )
-                    },
-                    enabled = hasDraftText,
-                ) { Text(stringResource(R.string.share_markdown)) }
-                OutlinedButton(
-                    onClick = {
-                        shareText(
-                            context = context,
-                            chooserTitle = context.getString(R.string.export_txt),
-                            mimeType = "text/plain",
-                            title = "${novel.title}.txt",
-                            text = buildTxtManuscript(novel, state.chapters, state.allScenes),
-                        )
-                    },
-                    enabled = hasDraftText,
-                ) { Text(stringResource(R.string.share_txt)) }
-                OutlinedButton(
-                    onClick = {
-                        shareBytes(
-                            context = context,
-                            chooserTitle = context.getString(R.string.export_epub),
-                            mimeType = "application/epub+zip",
-                            fileName = "${novel.title.safeFileName()}.epub",
-                            bytes = buildEpubManuscript(novel, state.chapters, state.allScenes),
-                        )
-                    },
-                    enabled = hasDraftText,
-                ) { Text(stringResource(R.string.share_epub)) }
+            Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            if (state.workflow.isBusy) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
         }
-        if (state.workflow.isBusy) {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+    }
+}
+
+@Composable
+private fun OverviewScreen(state: NovelWorkspaceUiState) {
+    val context = LocalContext.current
+    val novel = state.selectedNovel
+    SurfacePanel(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(12.dp)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        Text(stringResource(R.string.section_project_overview), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        if (novel == null) {
+            EmptyText(stringResource(R.string.empty_select_novel_first))
+            return@SurfacePanel
+        }
+
+        Text(novel.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        StatusPill(novel.status.name)
+        CompactBlock(stringResource(R.string.field_concept), novel.concept)
+        MetricStrip(
+            stringResource(R.string.field_genre) to stringResource(novel.genre.labelRes()),
+            stringResource(R.string.metric_themes) to novel.themes.joinToString().ifBlank { stringResource(R.string.none) },
+            stringResource(R.string.metric_bible) to bibleCount(novel).toString(),
+        )
+        val stats = computeProjectStats(novel, state.chapters, state.allScenes)
+        val usage = state.tokenUsage.toUsageSummary()
+        MetricStrip(
+            stringResource(R.string.metric_words) to stats.totalWords.toString(),
+            stringResource(R.string.metric_scenes) to "${stats.generatedScenes}/${stats.sceneCount}",
+            stringResource(R.string.metric_edited) to stats.editedScenes.toString(),
+            stringResource(R.string.metric_approved) to stats.approvedScenes.toString(),
+            stringResource(R.string.metric_cost) to usage.costLabel,
+        )
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            val hasDraftText = state.allScenes.any { it.text.isNotBlank() }
+            OutlinedButton(
+                onClick = {
+                    shareText(
+                        context = context,
+                        chooserTitle = context.getString(R.string.export_markdown),
+                        mimeType = "text/markdown",
+                        title = "${novel.title}.md",
+                        text = buildMarkdownManuscript(novel, state.chapters, state.allScenes),
+                    )
+                },
+                enabled = hasDraftText,
+            ) { Text(stringResource(R.string.share_markdown)) }
+            OutlinedButton(
+                onClick = {
+                    shareText(
+                        context = context,
+                        chooserTitle = context.getString(R.string.export_txt),
+                        mimeType = "text/plain",
+                        title = "${novel.title}.txt",
+                        text = buildTxtManuscript(novel, state.chapters, state.allScenes),
+                    )
+                },
+                enabled = hasDraftText,
+            ) { Text(stringResource(R.string.share_txt)) }
+            OutlinedButton(
+                onClick = {
+                    shareBytes(
+                        context = context,
+                        chooserTitle = context.getString(R.string.export_epub),
+                        mimeType = "application/epub+zip",
+                        fileName = "${novel.title.safeFileName()}.epub",
+                        bytes = buildEpubManuscript(novel, state.chapters, state.allScenes),
+                    )
+                },
+                enabled = hasDraftText,
+            ) { Text(stringResource(R.string.share_epub)) }
         }
     }
 }
@@ -393,12 +387,12 @@ private fun LibraryScreen(
             .padding(12.dp),
     ) {
         val compact = maxWidth < 760.dp
-        val novelList: @Composable (Modifier) -> Unit = { modifier ->
+        val novelList: @Composable (Modifier, Boolean) -> Unit = { modifier, constrained ->
             SurfacePanel(modifier = modifier) {
                 Text(stringResource(R.string.section_novels), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 if (state.novels.isEmpty()) {
                     EmptyText(stringResource(R.string.empty_no_novels))
-                } else {
+                } else if (constrained) {
                     LazyColumn(
                         modifier = Modifier
                             .weight(1f)
@@ -413,11 +407,21 @@ private fun LibraryScreen(
                             )
                         }
                     }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        state.novels.forEach { novel ->
+                            NovelRow(
+                                novel = novel,
+                                selected = novel.id == state.selectedNovel?.id,
+                                onClick = { onSelectNovel(novel.id) },
+                            )
+                        }
+                    }
                 }
             }
         }
-        val newNovelForm: @Composable (Modifier) -> Unit = { modifier ->
-            SurfacePanel(modifier = modifier.verticalScroll(rememberScrollState())) {
+        val newNovelTools: @Composable (Modifier) -> Unit = { modifier ->
+            SurfacePanel(modifier = modifier) {
                 CreateNovelForm(onCreateNovel)
                 ImportFromChatForm(
                     isBusy = state.workflow.isBusy,
@@ -427,14 +431,19 @@ private fun LibraryScreen(
         }
 
         if (compact) {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxSize()) {
-                novelList(Modifier.weight(1f).fillMaxWidth())
-                newNovelForm(Modifier.weight(1f).fillMaxWidth())
+            Column(
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                novelList(Modifier.fillMaxWidth(), false)
+                newNovelTools(Modifier.fillMaxWidth())
             }
         } else {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxSize()) {
-                novelList(Modifier.weight(0.9f).fillMaxHeight())
-                newNovelForm(Modifier.weight(1.1f).fillMaxHeight())
+                novelList(Modifier.weight(0.9f).fillMaxHeight(), true)
+                newNovelTools(Modifier.weight(1.1f).fillMaxHeight().verticalScroll(rememberScrollState()))
             }
         }
     }
@@ -442,25 +451,32 @@ private fun LibraryScreen(
 
 @Composable
 private fun NovelRow(novel: Novel, selected: Boolean, onClick: () -> Unit) {
-    val border = if (selected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
-    Column(
+    val containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow
+    val borderColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .border(border, RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+            .border(1.5.dp, borderColor, MaterialTheme.shapes.medium)
+            .clickable(onClick = onClick),
+        shape = MaterialTheme.shapes.medium,
+        color = containerColor,
+        tonalElevation = if (selected) 0.dp else 1.dp,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(novel.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            Text(stringResource(novel.genre.labelRes()), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(novel.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Text(stringResource(novel.genre.labelRes()), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            }
+            Text(novel.concept, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            MetricStrip(
+                stringResource(R.string.metric_chapters) to (novel.outline?.chapterBriefs?.size?.toString() ?: "0"),
+                stringResource(R.string.metric_themes) to novel.themes.size.toString(),
+                stringResource(R.string.metric_status) to novel.status.name,
+            )
         }
-        Text(novel.concept, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        MetricStrip(
-            stringResource(R.string.metric_chapters) to (novel.outline?.chapterBriefs?.size?.toString() ?: "0"),
-            stringResource(R.string.metric_themes) to novel.themes.size.toString(),
-            stringResource(R.string.metric_status) to novel.status.name,
-        )
     }
 }
 
@@ -571,7 +587,7 @@ private fun OutlineScreen(
     ) {
         val compact = maxWidth < 840.dp
         val projectPanel: @Composable (Modifier) -> Unit = { modifier ->
-            SurfacePanel(modifier = modifier.verticalScroll(rememberScrollState())) {
+            SurfacePanel(modifier = modifier) {
                 Text(stringResource(R.string.section_project), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 if (novel == null) {
                     EmptyText(stringResource(R.string.empty_select_novel_first))
@@ -588,27 +604,37 @@ private fun OutlineScreen(
                 }
             }
         }
-        val outlinePanel: @Composable (Modifier) -> Unit = { modifier ->
+        val outlinePanel: @Composable (Modifier, Boolean) -> Unit = { modifier, constrained ->
             SurfacePanel(modifier = modifier) {
                 Text(stringResource(R.string.section_outline), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 val outline = novel?.outline
                 if (outline == null) {
                     EmptyText(stringResource(R.string.empty_no_outline))
                 } else {
-                    OutlineEditor(outline.toDraft(), state.workflow.isBusy, onSaveOutline)
+                    OutlineEditor(
+                        initialDraft = outline.toDraft(),
+                        isBusy = state.workflow.isBusy,
+                        onSave = onSaveOutline,
+                        scrollable = constrained,
+                    )
                 }
             }
         }
 
         if (compact) {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxSize()) {
-                projectPanel(Modifier.fillMaxWidth().heightIn(min = 160.dp))
-                outlinePanel(Modifier.weight(1f).fillMaxWidth())
+            Column(
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                projectPanel(Modifier.fillMaxWidth())
+                outlinePanel(Modifier.fillMaxWidth(), false)
             }
         } else {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxSize()) {
-                projectPanel(Modifier.weight(0.9f).fillMaxHeight())
-                outlinePanel(Modifier.weight(1.4f).fillMaxHeight())
+                projectPanel(Modifier.weight(0.9f).fillMaxHeight().verticalScroll(rememberScrollState()))
+                outlinePanel(Modifier.weight(1.4f).fillMaxHeight(), true)
             }
         }
     }
@@ -640,12 +666,12 @@ private fun DraftScreen(
             .padding(12.dp),
     ) {
         val compact = maxWidth < 980.dp
-        val chapterPanel: @Composable (Modifier) -> Unit = { modifier ->
+        val chapterPanel: @Composable (Modifier, Boolean) -> Unit = { modifier, constrained ->
             SurfacePanel(modifier = modifier) {
                 Text(stringResource(R.string.section_chapters), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 if (state.chapters.isEmpty()) {
                     EmptyText(stringResource(R.string.empty_generate_outline_first))
-                } else {
+                } else if (constrained) {
                     LazyColumn(
                         modifier = Modifier
                             .weight(1f)
@@ -661,10 +687,21 @@ private fun DraftScreen(
                             )
                         }
                     }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        state.chapters.forEach { chapter ->
+                            SelectableRow(
+                                title = "${chapter.order}. ${chapter.title}",
+                                subtitle = chapterListSubtitle(chapter),
+                                selected = chapter.id == state.selectedChapter?.id,
+                                onClick = { onSelectChapter(chapter.id) },
+                            )
+                        }
+                    }
                 }
             }
         }
-        val scenePanel: @Composable (Modifier) -> Unit = { modifier ->
+        val scenePanel: @Composable (Modifier, Boolean) -> Unit = { modifier, constrained ->
             SurfacePanel(modifier = modifier) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(stringResource(R.string.section_scenes), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
@@ -675,11 +712,16 @@ private fun DraftScreen(
                         Text(stringResource(R.string.action_synopsis))
                     }
                 }
-                Column(
-                    modifier = Modifier
+                val sceneContentModifier = if (constrained) {
+                    Modifier
                         .weight(1f)
                         .fillMaxWidth()
-                        .verticalScroll(rememberScrollState()),
+                        .verticalScroll(rememberScrollState())
+                } else {
+                    Modifier.fillMaxWidth()
+                }
+                Column(
+                    modifier = sceneContentModifier,
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     ChapterSynopsisEditor(
@@ -706,7 +748,7 @@ private fun DraftScreen(
                 }
             }
         }
-        val draftPanel: @Composable (Modifier) -> Unit = { modifier ->
+        val draftPanel: @Composable (Modifier, Boolean) -> Unit = { modifier, constrained ->
             SurfacePanel(modifier = modifier) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(stringResource(R.string.section_draft), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
@@ -731,6 +773,13 @@ private fun DraftScreen(
                         Text(stringResource(R.string.action_queue_from_scene))
                     }
                 }
+                val editorModifier = if (constrained) {
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                } else {
+                    Modifier.fillMaxWidth()
+                }
                 SceneEditor(
                     scene = state.selectedScene,
                     isBusy = state.workflow.isBusy,
@@ -740,41 +789,55 @@ private fun DraftScreen(
                     onRetry = onRetryScene,
                     onManualEdit = onManualEditScene,
                     onApprove = onApproveScene,
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
+                    modifier = editorModifier,
+                    scrollable = constrained,
                 )
             }
         }
 
         if (compact) {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxSize()) {
-                chapterPanel(Modifier.weight(0.8f).fillMaxWidth())
-                scenePanel(Modifier.weight(1f).fillMaxWidth())
-                draftPanel(Modifier.weight(1.4f).fillMaxWidth())
+            Column(
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                chapterPanel(Modifier.fillMaxWidth(), false)
+                scenePanel(Modifier.fillMaxWidth(), false)
+                draftPanel(Modifier.fillMaxWidth(), false)
             }
         } else {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxSize()) {
-                chapterPanel(Modifier.weight(0.75f).fillMaxHeight())
-                scenePanel(Modifier.weight(0.95f).fillMaxHeight())
-                draftPanel(Modifier.weight(1.6f).fillMaxHeight())
+                chapterPanel(Modifier.weight(0.75f).fillMaxHeight(), true)
+                scenePanel(Modifier.weight(0.95f).fillMaxHeight(), true)
+                draftPanel(Modifier.weight(1.6f).fillMaxHeight(), true)
             }
         }
     }
 }
 
 @Composable
-private fun OutlineEditor(initialDraft: OutlineDraft, isBusy: Boolean, onSave: (OutlineDraft) -> Unit) {
+private fun OutlineEditor(
+    initialDraft: OutlineDraft,
+    isBusy: Boolean,
+    onSave: (OutlineDraft) -> Unit,
+    scrollable: Boolean = true,
+) {
     var premise by remember(initialDraft) { mutableStateOf(initialDraft.premise) }
     var plotPoints by remember(initialDraft) { mutableStateOf(initialDraft.majorPlotPoints) }
     var characterArcs by remember(initialDraft) { mutableStateOf(initialDraft.characterArcs) }
     var thematicStructure by remember(initialDraft) { mutableStateOf(initialDraft.thematicStructure) }
     var chapters by remember(initialDraft) { mutableStateOf(initialDraft.chapters) }
 
-    Column(
-        modifier = Modifier
+    val editorModifier = if (scrollable) {
+        Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
+            .verticalScroll(rememberScrollState())
+    } else {
+        Modifier.fillMaxWidth()
+    }
+    Column(
+        modifier = editorModifier,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         OutlinedTextField(
@@ -919,6 +982,7 @@ private fun SceneEditor(
     onManualEdit: () -> Unit,
     onApprove: () -> Unit,
     modifier: Modifier = Modifier,
+    scrollable: Boolean = true,
 ) {
     if (scene == null) {
         EmptyText(stringResource(R.string.empty_select_scene))
@@ -926,10 +990,15 @@ private fun SceneEditor(
     }
     var text by remember(scene.id, scene.text, streamingText) { mutableStateOf(streamingText ?: scene.text) }
     val shownText = streamingText ?: text
-    Column(
-        modifier = modifier
+    val editorModifier = if (scrollable) {
+        modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
+            .verticalScroll(rememberScrollState())
+    } else {
+        modifier.fillMaxWidth()
+    }
+    Column(
+        modifier = editorModifier,
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         CompactBlock(stringResource(R.string.section_synopsis), scene.synopsis)
@@ -1092,25 +1161,29 @@ private fun BibleEntryEditor(
 
 @Composable
 private fun BibleEntryRow(entry: BibleEntrySummary, selected: Boolean, onEdit: () -> Unit, onDelete: () -> Unit) {
-    val borderColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
-    Column(
+    val containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow
+    val borderColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.dp, borderColor, RoundedCornerShape(8.dp))
-            .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+            .border(1.dp, borderColor, MaterialTheme.shapes.medium),
+        shape = MaterialTheme.shapes.medium,
+        color = containerColor,
     ) {
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(entry.title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(entry.title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Text(entry.source, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 TextButton(onClick = onEdit) { Text(stringResource(R.string.action_edit)) }
                 TextButton(onClick = onDelete) { Text(stringResource(R.string.action_delete)) }
             }
-        }
-        Text(entry.detail.ifBlank { stringResource(R.string.none) }, style = MaterialTheme.typography.bodySmall)
-        if (entry.extra.isNotBlank()) {
-            Text(entry.extra, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f))
+            Text(entry.detail.ifBlank { stringResource(R.string.none) }, style = MaterialTheme.typography.bodySmall)
+            if (entry.extra.isNotBlank()) {
+                Text(entry.extra, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }
@@ -1122,29 +1195,34 @@ private fun BibleConflictPanel(
     onResolveConflict: (String, Boolean) -> Unit,
 ) {
     if (conflicts.isEmpty()) return
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color(0xFFFFF1D6), RoundedCornerShape(8.dp))
-            .border(1.dp, Color(0xFFC98212), RoundedCornerShape(8.dp))
-            .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = WarningAmberBg,
+        border = androidx.compose.foundation.BorderStroke(1.dp, WarningAmberBorder),
     ) {
-        Text(stringResource(R.string.section_canon_conflicts), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-        conflicts.forEach { conflict ->
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .border(1.dp, Color(0xFFE2B35B), RoundedCornerShape(8.dp))
-                    .padding(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Text("${conflict.section.name}: ${conflict.title} / ${conflict.field}", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-                CompactBlock(stringResource(R.string.label_canon), conflict.existingValue)
-                CompactBlock(stringResource(R.string.label_incoming), conflict.incomingValue)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { onResolveConflict(conflict.id, false) }, enabled = !isBusy) { Text(stringResource(R.string.action_keep_canon)) }
-                    Button(onClick = { onResolveConflict(conflict.id, true) }, enabled = !isBusy) { Text(stringResource(R.string.action_use_incoming)) }
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(stringResource(R.string.section_canon_conflicts), style = MaterialTheme.typography.titleSmall)
+            conflicts.forEach { conflict ->
+                Surface(
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.surface,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, WarningAmberBorder.copy(alpha = 0.6f)),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text("${conflict.section.name}: ${conflict.title} / ${conflict.field}", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                        CompactBlock(stringResource(R.string.label_canon), conflict.existingValue)
+                        CompactBlock(stringResource(R.string.label_incoming), conflict.incomingValue)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(onClick = { onResolveConflict(conflict.id, false) }, enabled = !isBusy) { Text(stringResource(R.string.action_keep_canon)) }
+                            Button(onClick = { onResolveConflict(conflict.id, true) }, enabled = !isBusy) { Text(stringResource(R.string.action_use_incoming)) }
+                        }
+                    }
                 }
             }
         }
@@ -1154,17 +1232,19 @@ private fun BibleConflictPanel(
 @Composable
 private fun BibleWarnings(warnings: List<BibleConflictWarning>) {
     if (warnings.isEmpty()) return
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color(0xFFFFF1D6), RoundedCornerShape(8.dp))
-            .border(1.dp, Color(0xFFC98212), RoundedCornerShape(8.dp))
-            .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = WarningAmberBg,
+        border = androidx.compose.foundation.BorderStroke(1.dp, WarningAmberBorder),
     ) {
-        Text(stringResource(R.string.section_duplicate_warnings), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-        warnings.forEach { warning ->
-            Text("${stringResource(warning.section.labelRes())}: ${warning.title} - ${warning.detail}", style = MaterialTheme.typography.bodySmall)
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(stringResource(R.string.section_duplicate_warnings), style = MaterialTheme.typography.titleSmall)
+            warnings.forEach { warning ->
+                Text("${stringResource(warning.section.labelRes())}: ${warning.title} - ${warning.detail}", style = MaterialTheme.typography.bodySmall)
+            }
         }
     }
 }
@@ -1239,43 +1319,49 @@ private fun RevisionSnapshotRow(
     onRestore: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
-            .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        tonalElevation = 1.dp,
     ) {
-        Text(snapshot.label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-        Text("${snapshot.targetType} / ${snapshot.createdAt}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.64f))
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            TextButton(onClick = onRestore, enabled = !isBusy) { Text(stringResource(R.string.action_restore)) }
-            TextButton(onClick = onDelete, enabled = !isBusy) { Text(stringResource(R.string.action_delete)) }
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Text(snapshot.label, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text("${snapshot.targetType} / ${snapshot.createdAt}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = onRestore, enabled = !isBusy) { Text(stringResource(R.string.action_restore)) }
+                TextButton(onClick = onDelete, enabled = !isBusy) { Text(stringResource(R.string.action_delete)) }
+            }
         }
     }
 }
 
 @Composable
 private fun UsageRecordRow(record: TokenUsageRecord) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
-            .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.medium,
+        tonalElevation = 1.dp,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(record.agentName, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                Text("${record.provider} / ${record.model}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.64f))
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(record.agentName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text("${record.provider} / ${record.model}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text(record.costLabel(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
             }
-            Text(record.costLabel(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+            MetricStrip(
+                stringResource(R.string.metric_input) to record.inputTokens.toString(),
+                stringResource(R.string.metric_output) to record.outputTokens.toString(),
+                stringResource(R.string.metric_total) to (record.inputTokens + record.outputTokens).toString(),
+            )
         }
-        MetricStrip(
-            stringResource(R.string.metric_input) to record.inputTokens.toString(),
-            stringResource(R.string.metric_output) to record.outputTokens.toString(),
-            stringResource(R.string.metric_total) to (record.inputTokens + record.outputTokens).toString(),
-        )
     }
 }
 
@@ -1384,6 +1470,7 @@ private fun ProviderMenu(provider: String, onChange: (String) -> Unit, modifier:
     }
 }
 
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun GenreMenu(genre: Genre, onChange: (Genre) -> Unit, modifier: Modifier = Modifier) {
@@ -1424,29 +1511,38 @@ private fun ModelField(label: String, value: String, onChange: (String) -> Unit,
 
 @Composable
 private fun SurfacePanel(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
-    Column(
-        modifier = modifier
-            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(8.dp))
-            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        content = content,
-    )
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.medium,
+        tonalElevation = 1.dp,
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            content = content,
+        )
+    }
 }
 
 @Composable
 private fun SelectableRow(title: String, subtitle: String, selected: Boolean, onClick: () -> Unit) {
-    val borderColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
-    Column(
+    val bgColor = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerLow
+    val borderColor = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .border(1.dp, borderColor, RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
-            .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+            .border(1.dp, borderColor, MaterialTheme.shapes.medium)
+            .clickable(onClick = onClick),
+        shape = MaterialTheme.shapes.medium,
+        color = bgColor,
     ) {
-        Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Text(subtitle, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f))
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(title, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(subtitle, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 
@@ -1460,31 +1556,33 @@ private fun ReviewPanel(
     onApprove: () -> Unit,
 ) {
     if (report == null) return
-    val accent = if (report.passed) MaterialTheme.colorScheme.primary else Color(0xFF9A2E2E)
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
-            .border(1.dp, accent.copy(alpha = 0.42f), RoundedCornerShape(8.dp))
-            .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+    val accent = if (report.passed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        border = androidx.compose.foundation.BorderStroke(1.dp, accent.copy(alpha = 0.4f)),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(stringResource(R.string.section_review), style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-            Text("${report.score}/10", style = MaterialTheme.typography.labelLarge, color = accent, fontWeight = FontWeight.SemiBold)
-        }
-        MetricStrip(
-            stringResource(R.string.metric_result) to stringResource(if (report.passed) R.string.review_passed else R.string.review_failed),
-            stringResource(R.string.metric_status) to report.status.name,
-            stringResource(R.string.metric_retries) to report.retryCount.toString(),
-        )
-        ReviewList(stringResource(R.string.section_issues), report.issues)
-        ReviewList(stringResource(R.string.section_suggested_fixes), report.suggestedFixes)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onAccept, enabled = !isBusy) { Text(stringResource(R.string.action_accept)) }
-            OutlinedButton(onClick = onRetry, enabled = !isBusy) { Text(stringResource(R.string.action_retry)) }
-            OutlinedButton(onClick = onManualEdit, enabled = !isBusy) { Text(stringResource(R.string.action_edit_manually)) }
-            Button(onClick = onApprove, enabled = !isBusy) { Text(stringResource(R.string.action_mark_approved)) }
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(R.string.section_review), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                Text("${report.score}/10", style = MaterialTheme.typography.labelLarge, color = accent, fontWeight = FontWeight.Bold)
+            }
+            MetricStrip(
+                stringResource(R.string.metric_result) to stringResource(if (report.passed) R.string.review_passed else R.string.review_failed),
+                stringResource(R.string.metric_status) to report.status.name,
+                stringResource(R.string.metric_retries) to report.retryCount.toString(),
+            )
+            ReviewList(stringResource(R.string.section_issues), report.issues)
+            ReviewList(stringResource(R.string.section_suggested_fixes), report.suggestedFixes)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onAccept, enabled = !isBusy) { Text(stringResource(R.string.action_accept)) }
+                OutlinedButton(onClick = onRetry, enabled = !isBusy) { Text(stringResource(R.string.action_retry)) }
+                OutlinedButton(onClick = onManualEdit, enabled = !isBusy) { Text(stringResource(R.string.action_edit_manually)) }
+                Button(onClick = onApprove, enabled = !isBusy) { Text(stringResource(R.string.action_mark_approved)) }
+            }
         }
     }
 }
@@ -1502,15 +1600,17 @@ private fun ReviewList(title: String, items: List<String>) {
 
 @Composable
 private fun CompactBlock(title: String, body: String) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
-            .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+    Surface(
+        shape = MaterialTheme.shapes.small,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
     ) {
-        Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-        Text(body.ifBlank { stringResource(R.string.none) }, style = MaterialTheme.typography.bodySmall)
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            Text(body.ifBlank { stringResource(R.string.none) }, style = MaterialTheme.typography.bodySmall)
+        }
     }
 }
 
@@ -1550,14 +1650,17 @@ private fun MetricStrip(vararg metrics: Pair<String, String>) {
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         metrics.forEach { (label, value) ->
-            Column(
-                modifier = Modifier
-                    .background(Color(0xFFEAF0E7), RoundedCornerShape(8.dp))
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp),
+            Surface(
+                shape = MaterialTheme.shapes.small,
+                color = MaterialTheme.colorScheme.surfaceContainerHighest,
             ) {
-                Text(value, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.64f))
+                Column(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(1.dp),
+                ) {
+                    Text(value, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         }
     }
@@ -1565,11 +1668,14 @@ private fun MetricStrip(vararg metrics: Pair<String, String>) {
 
 @Composable
 private fun RunLog(workflow: WorkflowState, onCancel: () -> Unit) {
-    Surface(color = MaterialTheme.colorScheme.surface) {
+    Surface(
+        tonalElevation = 2.dp,
+        shape = MaterialTheme.shapes.small,
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
@@ -1578,12 +1684,15 @@ private fun RunLog(workflow: WorkflowState, onCancel: () -> Unit) {
             Box(
                 modifier = Modifier
                     .size(8.dp)
-                    .background(if (workflow.error == null) MaterialTheme.colorScheme.primary else Color(0xFF9A2E2E), RoundedCornerShape(8.dp)),
+                    .background(
+                        if (workflow.error == null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                        RoundedCornerShape(4.dp),
+                    ),
             )
             Text(
                 text = status,
                 style = MaterialTheme.typography.bodySmall,
-                color = if (workflow.error == null) MaterialTheme.colorScheme.onSurface else Color(0xFF9A2E2E),
+                color = if (workflow.error == null) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
@@ -1597,14 +1706,17 @@ private fun RunLog(workflow: WorkflowState, onCancel: () -> Unit) {
 
 @Composable
 private fun StatusPill(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier
-            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-    )
+    Surface(
+        shape = MaterialTheme.shapes.small,
+        color = MaterialTheme.colorScheme.primaryContainer,
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onPrimaryContainer,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+        )
+    }
 }
 
 @Composable
@@ -1612,7 +1724,7 @@ private fun EmptyText(text: String) {
     Text(
         text = text,
         style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }
 

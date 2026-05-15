@@ -10,6 +10,8 @@ data class SceneExpansionInput(
     val relevantWorldRules: List<WorldRule>,
     val previousSceneEnding: String?,
     val styleGuide: StyleGuide,
+    val rollingChapterSummary: String? = null,
+    val referenceProseStyle: String? = null,
 )
 
 class SceneExpansionPrompt : PromptTemplate<SceneExpansionInput, String> {
@@ -46,6 +48,11 @@ The narrative voice, tense, and prose style are supplied in the user prompt. Fol
         appendLine("NARRATIVE VOICE: ${input.styleGuide.narrativeVoice}")
         appendLine("TENSE: ${input.styleGuide.tense}")
         appendLine("PROSE STYLE: ${input.styleGuide.proseStyle}")
+        input.referenceProseStyle?.takeIf { it.isNotBlank() }?.let {
+            appendLine()
+            appendLine("REFERENCE PROSE STYLE:")
+            appendLine(it.limitWords(150))
+        }
         if (input.styleGuide.additionalNotes.isNotBlank()) {
             appendLine("ADDITIONAL STYLE NOTES: ${input.styleGuide.additionalNotes}")
         }
@@ -74,12 +81,22 @@ The narrative voice, tense, and prose style are supplied in the user prompt. Fol
             }
             appendLine()
         }
+        input.rollingChapterSummary?.takeIf { it.isNotBlank() }?.let {
+            appendLine("ROLLING CHAPTER TENSION SUMMARY:")
+            appendLine(it)
+            appendLine()
+        }
         input.previousSceneEnding?.let {
             appendLine("PREVIOUS SCENE ENDING (continue from here):")
             appendLine(it)
             appendLine()
         }
         appendLine("Write the scene prose now. Output ONLY the story text, nothing else.")
+    }
+
+    private fun String.limitWords(maxWords: Int): String {
+        val words = trim().split(Regex("\\s+")).filter { it.isNotBlank() }
+        return words.take(maxWords).joinToString(" ")
     }
 
     override fun parseOutput(rawOutput: String): Result<String> {

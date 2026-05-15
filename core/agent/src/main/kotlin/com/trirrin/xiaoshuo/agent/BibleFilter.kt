@@ -27,33 +27,50 @@ class BibleFilter(private val tokenBudget: Int = 2000) {
         if (bible.isEmpty()) return bible
 
         val contextText = listOfNotNull(context.chapterSynopsis, context.sceneSynopsis).joinToString(" ")
-        val explicitNames = (context.characterNames + context.locationNames + extractNames(context))
-            .map { it.normalized() }
+        val explicitNames = (context.characterNames + context.locationNames + NameExtractor.extract(contextText))
+            .map { it.normalizedName() }
             .toSet()
-        val keywords = extractKeywords(contextText)
+        val contextTokens = extractScoredTokens(contextText)
 
-        val directCharacters = bible.characters.filter { character ->
-            character.name.normalized() in explicitNames ||
-                character.aliases.any { it.normalized() in explicitNames } ||
-                character.matchesAny(keywords)
-        }
+        val directCharacters = bible.characters
+            .mapNotNull { character ->
+                val score = character.nameScore(explicitNames) + character.textScore(contextTokens)
+                if (score <= 0) null else Scored(score, character)
+            }
+            .sorted()
+            .map { it.item }
         val relatedNames = directCharacters
-            .flatMap { character -> character.relationships.map { it.targetCharacterName.normalized() } }
+            .flatMap { character -> character.relationships.map { it.targetCharacterName.normalizedName() } }
             .toSet()
         val relatedCharacters = bible.characters.filter { character ->
-            character.name.normalized() in relatedNames && character !in directCharacters
+            character.name.normalizedName() in relatedNames && character !in directCharacters
         }
-        val relevantCharacters = (directCharacters + relatedCharacters).distinctBy { it.name.normalized() }
+        val relevantCharacters = (directCharacters + relatedCharacters).distinctBy { it.name.normalizedName() }
 
-        val relevantLocations = bible.locations.filter { location ->
-            location.name.normalized() in explicitNames || location.matchesAny(keywords)
-        }
-        val relevantEvents = bible.timelineEvents.filter { it.matchesAny(keywords) }
-            .ifEmpty { bible.timelineEvents.takeLast(5) }
-        val relevantRules = bible.worldRules.filter { it.matchesAny(keywords) }
-            .ifEmpty { bible.worldRules }
-        val relevantThemes = bible.themes.filter { it.matchesAny(keywords) }
-            .ifEmpty { bible.themes }
+        val relevantLocations = bible.locations.scoredBy(
+            explicitNames = explicitNames,
+            contextTokens = contextTokens,
+            nameValues = { listOf(name) },
+            textValues = { listOf(name, description, significance) },
+        )
+        val relevantEvents = bible.timelineEvents.scoredBy(
+            explicitNames = emptySet(),
+            contextTokens = contextTokens,
+            nameValues = { emptyList() },
+            textValues = { listOf(description) },
+        ).ifEmpty { bible.timelineEvents.takeLast(3) }
+        val relevantRules = bible.worldRules.scoredBy(
+            explicitNames = emptySet(),
+            contextTokens = contextTokens,
+            nameValues = { emptyList() },
+            textValues = { listOf(category, rule, details) },
+        )
+        val relevantThemes = bible.themes.scoredBy(
+            explicitNames = emptySet(),
+            contextTokens = contextTokens,
+            nameValues = { listOf(name) },
+            textValues = { listOf(name, description, motifSymbols.joinToString(" ")) },
+        )
 
         return trimToBudget(
             characters = relevantCharacters,
@@ -90,8 +107,16 @@ class BibleFilter(private val tokenBudget: Int = 2000) {
         }
 
         val keptCharacters = takeWhileBudget(characters) { character ->
-            listOf(character.name, character.description, character.personality, character.currentState)
-                .joinToString(" ")
+            listOf(
+                character.name,
+                character.aliases.joinToString(" "),
+                character.description,
+                character.personality,
+                character.currentState,
+                character.relationships.joinToString(" ") { relationship ->
+                    "${relationship.targetCharacterName} ${relationship.relationType}"
+                },
+            ).joinToString(" ")
         }
         val keptLocations = takeWhileBudget(locations) { location ->
             listOf(location.name, location.description, location.significance).joinToString(" ")
@@ -113,58 +138,62 @@ class BibleFilter(private val tokenBudget: Int = 2000) {
         )
     }
 
-    private fun extractNames(context: BibleFilterContext): Set<String> {
-        val text = listOfNotNull(context.chapterSynopsis, context.sceneSynopsis).joinToString(" ")
-        if (text.isBlank()) return emptySet()
-
-        return text.split(Regex("[\\s.,!?;:\"'()\\[\\]{}\\-—–]+"))
-            .filter { it.length > 2 && it.first().isUpperCase() }
-            .toSet()
-    }
-
-    private fun extractKeywords(text: String): Set<String> {
-        return text.split(Regex("[\\s.,!?;:\"'()\\[\\]{}\\-—–]+"))
-            .map { it.normalized() }
-            .filter { it.length > 2 }
-            .toSet()
+    private fun extractScoredTokens(text: String): Map<String, Int> {
+        return text.split(Regex("[^\\p{L}\\p{N}'-]+"))
+            .asSequence()
+            .map { it.normalizedName() }
+            .filter { it.length >= 4 && it !in stopWords }
+            .groupingBy { it }
+            .eachCount()
     }
 
     private fun estimateTokens(text: String): Int {
         return (text.length / CHARS_PER_TOKEN).coerceAtLeast(1)
     }
 
-    private fun CharacterEntry.matchesAny(keywords: Set<String>): Boolean {
-        if (keywords.isEmpty()) return false
-        return listOf(name, description, personality, currentState).any { it.containsAnyKeyword(keywords) } ||
-            aliases.any { it.normalized() in keywords }
+    private fun CharacterEntry.nameScore(explicitNames: Set<String>): Int {
+        val names = (listOf(name) + aliases).map { it.normalizedName() }
+        return if (names.any { it in explicitNames }) 100 else 0
     }
 
-    private fun LocationEntry.matchesAny(keywords: Set<String>): Boolean {
-        if (keywords.isEmpty()) return false
-        return listOf(name, description, significance).any { it.containsAnyKeyword(keywords) }
+    private fun CharacterEntry.textScore(contextTokens: Map<String, Int>): Int {
+        return listOf(name, aliases.joinToString(" "), description, personality, currentState)
+            .tokenOverlapScore(contextTokens)
     }
 
-    private fun TimelineEvent.matchesAny(keywords: Set<String>): Boolean {
-        if (keywords.isEmpty()) return false
-        return description.containsAnyKeyword(keywords)
+    private fun <T> List<T>.scoredBy(
+        explicitNames: Set<String>,
+        contextTokens: Map<String, Int>,
+        nameValues: T.() -> List<String>,
+        textValues: T.() -> List<String>,
+    ): List<T> {
+        return mapNotNull { item ->
+            val nameScore = if (item.nameValues().map { it.normalizedName() }.any { it in explicitNames }) 100 else 0
+            val textScore = item.textValues().tokenOverlapScore(contextTokens)
+            val score = nameScore + textScore
+            if (score <= 0) null else Scored(score, item)
+        }.sorted().map { it.item }
     }
 
-    private fun WorldRule.matchesAny(keywords: Set<String>): Boolean {
-        if (keywords.isEmpty()) return false
-        return listOf(category, rule, details).any { it.containsAnyKeyword(keywords) }
+    private fun List<String>.tokenOverlapScore(contextTokens: Map<String, Int>): Int {
+        if (contextTokens.isEmpty()) return 0
+        val itemTokens = flatMap { text -> extractScoredTokens(text).keys }.toSet()
+        return itemTokens.sumOf { contextTokens[it] ?: 0 }
     }
 
-    private fun ThemeEntry.matchesAny(keywords: Set<String>): Boolean {
-        if (keywords.isEmpty()) return false
-        return listOf(name, description, motifSymbols.joinToString(" ")).any { it.containsAnyKeyword(keywords) }
+    private data class Scored<T>(val score: Int, val item: T) : Comparable<Scored<T>> {
+        override fun compareTo(other: Scored<T>): Int = other.score.compareTo(score)
     }
 
-    private fun String.containsAnyKeyword(keywords: Set<String>): Boolean {
-        val normalized = normalized()
-        return keywords.any { it in normalized }
+    private companion object {
+        private val stopWords = setOf(
+            "about", "after", "again", "against", "along", "also", "away", "back", "been", "before",
+            "being", "between", "both", "chapter", "could", "down", "each", "from", "have", "into",
+            "just", "like", "more", "most", "only", "over", "scene", "should", "some", "than",
+            "that", "their", "them", "then", "there", "they", "this", "through", "under", "until",
+            "when", "where", "which", "while", "with", "would",
+        )
     }
-
-    private fun String.normalized(): String = trim().lowercase()
 }
 
 class BibleMerger {

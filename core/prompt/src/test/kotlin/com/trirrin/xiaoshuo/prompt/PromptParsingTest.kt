@@ -80,7 +80,9 @@ class PromptParsingTest {
         val raw = """
             {
               "complianceScore": 8,
+              "qualityScore": 6,
               "issues": ["Missing the final beat."],
+              "qualityIssues": ["Dialogue is stiff."],
               "suggestedFixes": ["Add the confrontation."],
               "passed": true
             }
@@ -89,6 +91,8 @@ class PromptParsingTest {
         val review = ReviewPrompt().parseOutput(raw).getOrThrow()
 
         assertEquals(8, review.complianceScore)
+        assertEquals(6, review.qualityScore)
+        assertEquals("Dialogue is stiff.", review.qualityIssues.single())
         assertTrue(review.passed)
         assertEquals("Add the confrontation.", review.suggestedFixes.single())
     }

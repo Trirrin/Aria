@@ -25,7 +25,7 @@ import org.junit.jupiter.api.Test
 
 class AgentPipelineTest {
     @Test
-    fun `outline agent replaces genre placeholder before sending request`() = runTest {
+    fun `outline agent keeps system prompt static and puts genre in user prompt`() = runTest {
         val llm = QueueLlmClient(
             """
             {
@@ -50,8 +50,10 @@ class AgentPipelineTest {
         )
 
         assertTrue(result is AgentResult.OutlineResult)
-        assertTrue(llm.requests.single().systemPrompt.contains("Fantasy"))
+        assertFalse(llm.requests.single().systemPrompt.contains("Fantasy"))
         assertFalse(llm.requests.single().systemPrompt.contains("$" + "GENRE"))
+        assertTrue(llm.requests.single().messages.single().content.contains("GENRE: Fantasy"))
+        assertTrue(llm.requests.single().cacheableSystemPrompt)
     }
 
     @Test
@@ -103,6 +105,7 @@ class AgentPipelineTest {
             """
             {
               "complianceScore": 8,
+              "qualityScore": 8,
               "issues": [],
               "suggestedFixes": [],
               "passed": true
@@ -266,6 +269,7 @@ class AgentPipelineTest {
             """
             {
               "complianceScore": 9,
+              "qualityScore": 8,
               "issues": [],
               "suggestedFixes": [],
               "passed": true
@@ -339,6 +343,7 @@ class AgentPipelineTest {
             """
             {
               "complianceScore": 4,
+              "qualityScore": 8,
               "issues": ["The scene never crosses the Ash Gate."],
               "suggestedFixes": ["Add the crossing beat."],
               "passed": false

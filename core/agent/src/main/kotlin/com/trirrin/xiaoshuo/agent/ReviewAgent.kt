@@ -35,6 +35,7 @@ class ReviewAgent(
             model = model,
             maxTokens = 2048,
             temperature = 0.3,
+            cacheableSystemPrompt = true,
         )
 
         val response: LlmResponse = try {
@@ -57,6 +58,8 @@ class ReviewAgent(
                     issues = review.issues,
                     suggestedFixes = review.suggestedFixes,
                     passed = review.passed,
+                    qualityScore = review.qualityScore,
+                    qualityIssues = review.qualityIssues,
                     usage = baseUsage.plusRepair(repairUsage),
                 )
             },

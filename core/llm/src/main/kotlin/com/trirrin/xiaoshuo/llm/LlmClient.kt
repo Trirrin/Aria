@@ -19,6 +19,7 @@ data class LlmRequest(
     val maxTokens: Int = 4096,
     val temperature: Double = 0.7,
     val stopSequences: List<String> = emptyList(),
+    val cacheableSystemPrompt: Boolean = false,
 )
 
 data class LlmMessage(

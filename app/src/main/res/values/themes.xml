@@ -1,7 +1,7 @@
 <resources>
     <style name="Theme.XiaoShuo" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:windowLightStatusBar">true</item>
-        <item name="android:navigationBarColor">#F5F7FA</item>
-        <item name="android:statusBarColor">#F5F7FA</item>
+        <item name="android:navigationBarColor">#FAF9F6</item>
+        <item name="android:statusBarColor">#FAF9F6</item>
     </style>
 </resources>
