@@ -47,7 +47,7 @@ class ChapterSynopsisAgent(
             majorPlotPoints = outline.majorPlotPoints,
             relevantCharacters = relevantBible.characters,
             relevantLocations = relevantBible.locations,
-            previousChapterEnding = previousChapterEnding,
+            previousChapterEnding = trimContinuityContext(previousChapterEnding),
         )
 
         val request = LlmRequest(
@@ -64,8 +64,17 @@ class ChapterSynopsisAgent(
             return AgentResult.Error("LLM call failed: ${e.message}", e)
         }
 
-        return prompt.parseOutput(response.content).fold(
-            onSuccess = { AgentResult.SynopsisResult(it, response.toAgentUsage(name, model)) },
+        val baseUsage = response.toAgentUsage(name, model)
+        return parseOrRepairJsonOutput(
+            rawContent = response.content,
+            llmClient = llmClient,
+            model = model,
+            agentName = name,
+            parse = prompt::parseOutput,
+        ).fold(
+            onSuccess = { (synopsis, repairUsage) ->
+                AgentResult.SynopsisResult(synopsis, baseUsage.plusRepair(repairUsage))
+            },
             onFailure = {
                 AgentResult.Error("Failed to parse synopsis: ${it.message}", it)
             },

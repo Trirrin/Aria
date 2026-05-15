@@ -2,6 +2,7 @@ package com.trirrin.xiaoshuo.llm
 
 import com.trirrin.xiaoshuo.llm.anthropic.AnthropicLlmClient
 import com.trirrin.xiaoshuo.llm.openai.OpenAiLlmClient
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -103,6 +104,191 @@ class LlmClientHttpTest {
     }
 
     @Test
+    fun `openai stream sends streaming request and emits one completion chunk`() = runTest {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/event-stream")
+                .setBody(
+                    """
+                    data: {"choices":[{"delta":{"content":"hel"}}]}
+
+                    data: {"choices":[{"delta":{"content":"lo"}}],"usage":{"prompt_tokens":5,"completion_tokens":2}}
+
+                    data: [DONE]
+
+                    """.trimIndent(),
+                ),
+        )
+
+        try {
+            val client = OpenAiLlmClient(
+                apiKey = "openai-key",
+                baseUrl = server.url("/").toString().trimEnd('/'),
+            )
+            val chunks = client.stream(sampleRequest(model = "gpt-test")).toList()
+            val recorded = server.takeRequest()
+            val body = json.parseToJsonElement(recorded.body.readUtf8()).jsonObject
+
+            assertEquals("/v1/chat/completions", recorded.path)
+            assertEquals("Bearer openai-key", recorded.getHeader("Authorization"))
+            assertEquals("true", body["stream"]?.jsonPrimitive?.content)
+            assertEquals(listOf("hel", "lo"), chunks.filter { it.delta.isNotEmpty() }.map { it.delta })
+            assertEquals(1, chunks.count { it.isComplete })
+            assertEquals(5, chunks.last().inputTokens)
+            assertEquals(2, chunks.last().outputTokens)
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun `anthropic stream sends streaming request and parses message events`() = runTest {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/event-stream")
+                .setBody(
+                    """
+                    event: message_start
+                    data: {"type":"message_start","message":{"usage":{"input_tokens":7}}}
+
+                    event: content_block_delta
+                    data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hel"}}
+
+                    event: content_block_delta
+                    data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"lo"}}
+
+                    event: message_delta
+                    data: {"type":"message_delta","usage":{"output_tokens":2}}
+
+                    event: message_stop
+                    data: {"type":"message_stop"}
+
+                    """.trimIndent(),
+                ),
+        )
+
+        try {
+            val client = AnthropicLlmClient(
+                apiKey = "anthropic-key",
+                baseUrl = server.url("/").toString().trimEnd('/'),
+            )
+            val chunks = client.stream(sampleRequest(model = "claude-test")).toList()
+            val recorded = server.takeRequest()
+            val body = json.parseToJsonElement(recorded.body.readUtf8()).jsonObject
+
+            assertEquals("/v1/messages", recorded.path)
+            assertEquals("anthropic-key", recorded.getHeader("x-api-key"))
+            assertEquals("true", body["stream"]?.jsonPrimitive?.content)
+            assertEquals(listOf("hel", "lo"), chunks.filter { it.delta.isNotEmpty() }.map { it.delta })
+            val usageChunk = chunks.first { it.inputTokens != null || it.outputTokens != null }
+            assertEquals(7, usageChunk.inputTokens)
+            assertEquals(2, usageChunk.outputTokens)
+            assertEquals(1, chunks.count { it.isComplete })
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun `openai malformed stream event maps to network error`() = runTest {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/event-stream")
+                .setBody("data: {not-json}\n\n"),
+        )
+
+        try {
+            val client = OpenAiLlmClient(
+                apiKey = "openai-key",
+                baseUrl = server.url("/").toString().trimEnd('/'),
+            )
+
+            try {
+                client.stream(sampleRequest(model = "gpt-test")).toList()
+                fail("Expected NetworkError")
+            } catch (error: LlmError.NetworkError) {
+                assertTrue(error.message.orEmpty().contains("Malformed OpenAI stream event"))
+            }
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun `anthropic malformed stream event maps to network error`() = runTest {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "text/event-stream")
+                .setBody("data: {not-json}\n\n"),
+        )
+
+        try {
+            val client = AnthropicLlmClient(
+                apiKey = "anthropic-key",
+                baseUrl = server.url("/").toString().trimEnd('/'),
+            )
+
+            try {
+                client.stream(sampleRequest(model = "claude-test")).toList()
+                fail("Expected NetworkError")
+            } catch (error: LlmError.NetworkError) {
+                assertTrue(error.message.orEmpty().contains("Malformed Anthropic stream event"))
+            }
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun `factory uses default model only when request model is blank`() = runTest {
+        val server = MockWebServer()
+        repeat(2) {
+            server.enqueue(
+                MockResponse()
+                    .setResponseCode(200)
+                    .setHeader("Content-Type", "application/json")
+                    .setBody(
+                        """
+                        {
+                          "choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}],
+                          "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+                        }
+                        """.trimIndent(),
+                    ),
+            )
+        }
+
+        try {
+            val client = LlmClientFactory().create(
+                LlmClientConfig(
+                    provider = LlmProvider.OPENAI,
+                    apiKey = "openai-key",
+                    baseUrl = server.url("/").toString().trimEnd('/'),
+                    defaultModel = "fallback-model",
+                ),
+            )
+
+            client.complete(sampleRequest(model = ""))
+            val fallbackBody = json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+            assertEquals("fallback-model", fallbackBody["model"]?.jsonPrimitive?.content)
+
+            client.complete(sampleRequest(model = "explicit-model"))
+            val explicitBody = json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+            assertEquals("explicit-model", explicitBody["model"]?.jsonPrimitive?.content)
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
     fun `openai context length error maps to context too long`() = runTest {
         val server = MockWebServer()
         server.enqueue(
@@ -132,6 +318,42 @@ class LlmClientHttpTest {
                 fail("Expected ContextTooLong")
             } catch (error: LlmError.ContextTooLong) {
                 assertTrue(error.message.orEmpty().contains("context length"))
+            }
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun `anthropic prompt length error maps to context too long`() = runTest {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(400)
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """
+                    {
+                      "error": {
+                        "type": "invalid_request_error",
+                        "message": "prompt is too long for this model"
+                      }
+                    }
+                    """.trimIndent(),
+                ),
+        )
+
+        try {
+            val client = AnthropicLlmClient(
+                apiKey = "anthropic-key",
+                baseUrl = server.url("/").toString().trimEnd('/'),
+            )
+
+            try {
+                client.complete(sampleRequest(model = "claude-test"))
+                fail("Expected ContextTooLong")
+            } catch (error: LlmError.ContextTooLong) {
+                assertTrue(error.message.orEmpty().contains("prompt is too long"))
             }
         } finally {
             server.shutdown()

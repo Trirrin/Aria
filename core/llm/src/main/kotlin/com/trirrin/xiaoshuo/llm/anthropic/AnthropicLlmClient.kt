@@ -41,17 +41,18 @@ class AnthropicLlmClient(
         try {
             var inputTokens: Int? = null
             var outputTokens: Int? = null
+            var completed = false
             var line = reader.readLine()
 
             while (line != null) {
                 if (line.startsWith("data: ")) {
                     val data = line.removePrefix("data: ").trim()
                     if (data == "[DONE]") {
-                        emit(LlmChunk(delta = "", isComplete = true))
+                        completed = true
                         break
                     }
 
-                    val event = json.parseToJsonElement(data).jsonObject
+                    val event = parseStreamObject(data)
                     val type = event["type"]?.jsonPrimitive?.content
 
                     when (type) {
@@ -81,12 +82,29 @@ class AnthropicLlmClient(
                 line = reader.readLine()
             }
 
-            emit(LlmChunk(delta = "", isComplete = true))
+            if (!completed || inputTokens != null || outputTokens != null) {
+                emit(LlmChunk(
+                    delta = "",
+                    inputTokens = inputTokens,
+                    outputTokens = outputTokens,
+                    isComplete = true,
+                ))
+            } else {
+                emit(LlmChunk(delta = "", isComplete = true))
+            }
         } finally {
             reader.close()
             response.close()
         }
     }.flowOn(Dispatchers.IO)
+
+    private fun parseStreamObject(data: String): JsonObject {
+        return try {
+            json.parseToJsonElement(data).jsonObject
+        } catch (error: Exception) {
+            throw LlmError.NetworkError(IllegalStateException("Malformed Anthropic stream event", error))
+        }
+    }
 
     private fun buildHttpRequest(request: LlmRequest, stream: Boolean): Request {
         val messagesArray = buildJsonArray {

@@ -124,16 +124,13 @@ Settings are stored with DataStore. API keys are currently local settings data; 
 
 ### Partially Implemented
 
-- Scene continuity: previous scene ending is passed for selected scene generation, but broader chapter/novel continuity UX is thin.
-- Bible workflow: facts can be extracted, edited, previewed, and conflict-resolved; repository/UI tests are still missing.
-- Error handling: errors are shown in the run log, but full retry/resume behavior across app process death is still thin.
+- Scene continuity: previous chapter/scene ending context is passed through a shared cap, but broader chapter/novel continuity UX is thin.
+- Error handling: malformed structured JSON gets one repair attempt and provider streaming errors are normalized, but full background retry/resume behavior across app process death is still thin.
 - Mobile UI: the workspace is functional, but still more tablet/workbench than polished phone UI.
 
 ### Not Yet Implemented
 
 - Background generation outside the active workspace lifecycle.
-- App UI tests and ViewModel tests.
-- Real-provider smoke test tooling.
 
 ## Implementation Roadmap
 
@@ -287,36 +284,45 @@ Acceptance criteria:
 - A complete novel can leave the app in usable Markdown, TXT, or EPUB format.
 - User can recover earlier versions.
 - User can understand generation cost.
-### Phase 9: Tests And Hardening
+### Phase 9: Tests And Hardening - Done
 
 Goal: stop accidental breakage.
 
-Tasks:
+Done:
 
-1. Add ViewModel tests for selection and generation state transitions.
-2. Add repository tests.
-3. Add Compose UI smoke tests for the main tabs.
-4. Add fake LLM pipeline for deterministic UI tests.
-5. Add real-provider manual smoke test behind local-only configuration.
-6. Add lint/static checks to CI when CI exists.
+1. Added repository roundtrip tests for novels, chapters, scenes, review reports, scene status, and text provenance.
+2. Added repository recovery tests for interrupted `GENERATING` scenes.
+3. Added repository tests for revision snapshots and token usage persistence.
+4. Added ViewModel tests for selection, scene editing, synopsis generation, scene generation failure recovery, and missing API key handling.
+5. Added deterministic fake LLM coverage through mocked `AgentPipeline` flows in ViewModel tests.
+6. Added a Compose `MainActivity` smoke test that launches the app shell and switches the main tabs.
+7. Added MockWebServer tests for OpenAI and Anthropic streaming request/response handling.
+8. Added MockWebServer coverage for default model fallback behavior in `LlmClientFactory`.
+9. Added a local-only real-provider smoke test gated by environment variables.
+10. Fixed OpenAI and Anthropic streaming completion emission so terminal events produce one completion chunk instead of duplicate completion signals.
+11. Added malformed SSE and context-length error mapping coverage for provider clients.
+12. Added balanced JSON extraction tests and one-shot structured-output repair coverage for malformed LLM JSON.
+13. Added shared continuity context trimming for previous chapter/scene endings.
+14. Fixed interrupted streaming recovery so partial drafts are kept recoverable instead of being mislabeled as generated prose.
+15. Confirmed there is no CI workflow yet; lint/static checks remain handled by local `./gradlew build` until CI exists.
 
 Acceptance criteria:
 
 - Core build and tests pass with `./gradlew build`.
 - UI state changes are covered without hitting real LLM APIs.
-- Provider request formatting remains covered by MockWebServer tests.
+- Provider request formatting and streaming behavior remain covered by MockWebServer tests.
 
 ## Edge Cases To Handle
 
 | Case | Required behavior | Current status |
 | --- | --- | --- |
-| Invalid JSON from LLM | strict parse, code-fence fallback, then error/retry | partially implemented in prompts; retry workflow incomplete |
-| Context overflow | BibleFilter enforces token budget and previous scene ending is capped | partially implemented |
+| Invalid JSON from LLM | strict parse, code-fence fallback, then error/retry | implemented for structured outputs with balanced JSON extraction and one repair attempt |
+| Context overflow | BibleFilter enforces token budget and previous chapter/scene ending is capped | implemented for Bible context and immediate continuity snippets |
 | Review score too low | expose issues and allow retry/edit/accept | implemented |
 | Bible conflict | preserve user canon, flag conflict, let user resolve | implemented |
 | Large Bible | relevance scoring and token budget | implemented |
-| Interrupted generation | recover scene status on restart | implemented |
-| Regeneration | do not destroy user edits without explicit confirmation | incomplete |
+| Interrupted generation | recover scene status on restart | implemented; partial streamed drafts are preserved but reset to recoverable pending status |
+| Regeneration | do not destroy user edits without explicit confirmation | UI confirmation path still incomplete |
 | Missing API key | block generation with clear error | implemented |
 
 ## Verification Commands
@@ -349,6 +355,6 @@ Manual smoke path:
 
 ## Product Priorities
 
-The next highest-value work is Phase 9: tests and hardening. The major product workflow now exists; the next risk is regressions in state transitions, persistence, and UI behavior.
+The next highest-value work is UI polish and explicit overwrite confirmation for regeneration. The major non-UI hardening path is now covered by deterministic tests around parsing, provider streaming, repository recovery, and continuity context bounds.
 
-Do not invent infrastructure for sport. Add deterministic tests around the real breakage points: ViewModel generation state, repository recovery, Compose smoke paths, and provider request formatting.
+Do not invent infrastructure for sport. Keep tightening real breakage points as they appear, especially overwrite semantics and process-death behavior.

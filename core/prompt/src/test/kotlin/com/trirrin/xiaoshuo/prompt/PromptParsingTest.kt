@@ -33,6 +33,49 @@ class PromptParsingTest {
     }
 
     @Test
+    fun `outline parser skips prose braces before json`() {
+        val raw = """
+            The concept mentions {memory}, but the JSON is below.
+            {
+              "premise": "A courier steals a living map.",
+              "majorPlotPoints": [
+                {"name": "Inciting Incident", "description": "Mira steals the map.", "position": 0.12}
+              ],
+              "characterArcs": ["Mira learns to trust others."],
+              "thematicStructure": "Trust against control.",
+              "chapterCount": 1,
+              "chapterBriefs": [
+                {"chapterIndex": 1, "title": "The Theft", "plotBeats": "Mira steals the map.", "purposeInStory": "Launch the conflict."}
+              ]
+            }
+        """.trimIndent()
+
+        val outline = OutlinePrompt().parseOutput(raw).getOrThrow()
+
+        assertEquals("A courier steals a living map.", outline.premise)
+        assertEquals("The Theft", outline.chapterBriefs.single().title)
+    }
+
+    @Test
+    fun `review parser preserves braces inside strings`() {
+        val raw = """
+            ```json
+            {
+              "complianceScore": 6,
+              "issues": ["The output includes the literal token {missing_beat} instead of the beat."],
+              "suggestedFixes": ["Replace {missing_beat} with the actual confrontation."],
+              "passed": false
+            }
+            ```
+        """.trimIndent()
+
+        val review = ReviewPrompt().parseOutput(raw).getOrThrow()
+
+        assertEquals(6, review.complianceScore)
+        assertEquals("Replace {missing_beat} with the actual confrontation.", review.suggestedFixes.single())
+    }
+
+    @Test
     fun `review parser returns structured compliance result`() {
         val raw = """
             {

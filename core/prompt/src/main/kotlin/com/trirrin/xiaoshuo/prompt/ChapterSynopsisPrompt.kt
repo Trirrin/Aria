@@ -85,9 +85,8 @@ OUTPUT FORMAT: Return ONLY a JSON object, no markdown, no extra text:
     }
 
     override fun parseOutput(rawOutput: String): Result<ChapterSynopsis> {
-        val cleaned = extractJson(rawOutput)
         return try {
-            Result.success(json.decodeFromString<ChapterSynopsis>(cleaned))
+            Result.success(json.decodeObjectOutput<ChapterSynopsis>(rawOutput))
         } catch (e: Exception) {
             Result.failure(e)
         }

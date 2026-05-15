@@ -95,7 +95,7 @@ class AgentPipeline(
                 novel = novel,
                 chapter = chapter,
                 chapters = chapters,
-                previousChapterEnding = previousChapterEnding,
+                previousChapterEnding = trimContinuityContext(previousChapterEnding),
             )
         } else {
             regenerateChapterSynopsis(novel, chapter, previousChapterEnding, reviewFeedback)
@@ -144,7 +144,7 @@ class AgentPipeline(
                 novel = novel,
                 chapter = chapter,
                 scene = scene,
-                previousSceneEnding = previousSceneEnding,
+                previousSceneEnding = trimContinuityContext(previousSceneEnding),
             )
         } else {
             regenerateScene(novel, chapter, scene, previousSceneEnding, reviewFeedback)
@@ -242,7 +242,7 @@ class AgentPipeline(
             majorPlotPoints = outline.majorPlotPoints,
             relevantCharacters = novel.bible.characters,
             relevantLocations = novel.bible.locations,
-            previousChapterEnding = previousChapterEnding,
+            previousChapterEnding = trimContinuityContext(previousChapterEnding),
         )
         val userPrompt = buildString {
             append(prompt.buildUserPrompt(input))
@@ -261,8 +261,17 @@ class AgentPipeline(
         )
         return try {
             val response = chapterSynopsisAgent.llmClient.complete(request)
-            prompt.parseOutput(response.content).fold(
-                onSuccess = { AgentResult.SynopsisResult(it, response.toAgentUsage(chapterSynopsisAgent.name, chapterSynopsisAgent.model)) },
+            val baseUsage = response.toAgentUsage(chapterSynopsisAgent.name, chapterSynopsisAgent.model)
+            parseOrRepairJsonOutput(
+                rawContent = response.content,
+                llmClient = chapterSynopsisAgent.llmClient,
+                model = chapterSynopsisAgent.model,
+                agentName = chapterSynopsisAgent.name,
+                parse = prompt::parseOutput,
+            ).fold(
+                onSuccess = { (synopsis, repairUsage) ->
+                    AgentResult.SynopsisResult(synopsis, baseUsage.plusRepair(repairUsage))
+                },
                 onFailure = { AgentResult.Error("Failed to parse retried synopsis: ${it.message}", it) },
             )
         } catch (e: Exception) {
@@ -287,7 +296,7 @@ class AgentPipeline(
             relevantCharacters = novel.bible.characters,
             relevantLocations = novel.bible.locations,
             relevantWorldRules = novel.bible.worldRules,
-            previousSceneEnding = previousSceneEnding,
+            previousSceneEnding = trimContinuityContext(previousSceneEnding),
             styleGuide = novel.styleGuide,
         )
         val userPrompt = buildString {
@@ -334,7 +343,7 @@ class AgentPipeline(
             novel = novel,
             chapter = chapter,
             scene = scene,
-            previousSceneEnding = previousSceneEnding,
+            previousSceneEnding = trimContinuityContext(previousSceneEnding),
         ).collect { chunk ->
             if (chunk.delta.isNotEmpty()) {
                 emit(PipelineEvent.SceneTextDelta(chunk.delta))
@@ -366,7 +375,7 @@ class AgentPipeline(
             novel = novel,
             chapter = chapter,
             scene = scene,
-            previousSceneEnding = previousSceneEnding,
+            previousSceneEnding = trimContinuityContext(previousSceneEnding),
         )
     }
 }

@@ -64,6 +64,18 @@ class BibleFilterTest {
     }
 
     @Test
+    fun `continuity context keeps only trailing words`() {
+        val context = (1..250).joinToString(" ") { "word$it" }
+
+        val trimmed = trimContinuityContext(context, maxWords = 200)
+
+        val words = trimmed.orEmpty().split(" ")
+        assertEquals(200, words.size)
+        assertEquals("word51", words.first())
+        assertEquals("word250", words.last())
+    }
+
+    @Test
     fun `merger updates existing facts and appends new facts`() {
         val existing = NovelBible(
             characters = listOf(CharacterEntry(name = "Mira", currentState = "unhurt")),

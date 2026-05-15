@@ -42,8 +42,17 @@ class ContinuityAgent(
             return AgentResult.Error("LLM call failed: ${e.message}", e)
         }
 
-        return prompt.parseOutput(response.content).fold(
-            onSuccess = { AgentResult.ContinuityResult(it, response.toAgentUsage(name, model)) },
+        val baseUsage = response.toAgentUsage(name, model)
+        return parseOrRepairJsonOutput(
+            rawContent = response.content,
+            llmClient = llmClient,
+            model = model,
+            agentName = name,
+            parse = prompt::parseOutput,
+        ).fold(
+            onSuccess = { (diff, repairUsage) ->
+                AgentResult.ContinuityResult(diff, baseUsage.plusRepair(repairUsage))
+            },
             onFailure = {
                 AgentResult.Error("Failed to parse continuity output: ${it.message}", it)
             },

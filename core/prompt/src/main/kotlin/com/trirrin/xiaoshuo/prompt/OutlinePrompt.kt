@@ -2,7 +2,6 @@ package com.trirrin.xiaoshuo.prompt
 
 import com.trirrin.xiaoshuo.model.*
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.serializer
 
 data class OutlineInput(
     val concept: String,
@@ -66,24 +65,10 @@ Create a complete novel outline following the JSON format specified in your inst
 """.trimIndent()
 
     override fun parseOutput(rawOutput: String): Result<NovelOutline> {
-        val cleaned = extractJson(rawOutput)
         return try {
-            Result.success(json.decodeFromString<NovelOutline>(cleaned))
+            Result.success(json.decodeObjectOutput<NovelOutline>(rawOutput))
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
-}
-
-internal fun extractJson(text: String): String {
-    val trimmed = text.trim()
-    if (trimmed.startsWith("{")) return trimmed
-    val codeFenceRegex = Regex("```(?:json)?\\s*\\n?([\\s\\S]*?)\\n?```")
-    codeFenceRegex.find(trimmed)?.groupValues?.get(1)?.trim()?.let { return it }
-    val jsonStart = trimmed.indexOf('{')
-    val jsonEnd = trimmed.lastIndexOf('}')
-    if (jsonStart >= 0 && jsonEnd > jsonStart) {
-        return trimmed.substring(jsonStart, jsonEnd + 1)
-    }
-    return trimmed
 }

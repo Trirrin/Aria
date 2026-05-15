@@ -40,7 +40,7 @@ class SceneExpansionAgent(
             relevantCharacters = relevantBible.characters,
             relevantLocations = relevantBible.locations,
             relevantWorldRules = relevantBible.worldRules,
-            previousSceneEnding = previousSceneEnding,
+            previousSceneEnding = trimContinuityContext(previousSceneEnding),
             styleGuide = novel.styleGuide,
         )
 
@@ -102,7 +102,7 @@ class SceneExpansionAgent(
             relevantCharacters = relevantBible.characters,
             relevantLocations = relevantBible.locations,
             relevantWorldRules = relevantBible.worldRules,
-            previousSceneEnding = previousSceneEnding,
+            previousSceneEnding = trimContinuityContext(previousSceneEnding),
             styleGuide = novel.styleGuide,
         )
 

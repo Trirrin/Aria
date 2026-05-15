@@ -43,14 +43,21 @@ class ReviewAgent(
             return AgentResult.Error("LLM call failed: ${e.message}", e)
         }
 
-        return prompt.parseOutput(response.content).fold(
-            onSuccess = {
+        val baseUsage = response.toAgentUsage(name, model)
+        return parseOrRepairJsonOutput(
+            rawContent = response.content,
+            llmClient = llmClient,
+            model = model,
+            agentName = name,
+            parse = prompt::parseOutput,
+        ).fold(
+            onSuccess = { (review, repairUsage) ->
                 AgentResult.ReviewResult(
-                    score = it.complianceScore,
-                    issues = it.issues,
-                    suggestedFixes = it.suggestedFixes,
-                    passed = it.passed,
-                    usage = response.toAgentUsage(name, model),
+                    score = review.complianceScore,
+                    issues = review.issues,
+                    suggestedFixes = review.suggestedFixes,
+                    passed = review.passed,
+                    usage = baseUsage.plusRepair(repairUsage),
                 )
             },
             onFailure = {

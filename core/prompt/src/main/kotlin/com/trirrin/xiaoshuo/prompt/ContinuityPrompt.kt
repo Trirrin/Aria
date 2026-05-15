@@ -137,9 +137,8 @@ If no changes are needed for a category, return an empty array for that field.
     }
 
     override fun parseOutput(rawOutput: String): Result<BibleDiff> {
-        val cleaned = extractJson(rawOutput)
         return try {
-            Result.success(json.decodeFromString<BibleDiff>(cleaned))
+            Result.success(json.decodeObjectOutput<BibleDiff>(rawOutput))
         } catch (e: Exception) {
             Result.failure(e)
         }

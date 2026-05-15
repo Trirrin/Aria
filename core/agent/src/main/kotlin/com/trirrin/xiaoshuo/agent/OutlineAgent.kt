@@ -36,8 +36,17 @@ class OutlineAgent(
             return AgentResult.Error("LLM call failed: ${e.message}", e)
         }
 
-        return prompt.parseOutput(response.content).fold(
-            onSuccess = { AgentResult.OutlineResult(it, response.toAgentUsage(name, model)) },
+        val baseUsage = response.toAgentUsage(name, model)
+        return parseOrRepairJsonOutput(
+            rawContent = response.content,
+            llmClient = llmClient,
+            model = model,
+            agentName = name,
+            parse = prompt::parseOutput,
+        ).fold(
+            onSuccess = { (outline, repairUsage) ->
+                AgentResult.OutlineResult(outline, baseUsage.plusRepair(repairUsage))
+            },
             onFailure = {
                 AgentResult.Error("Failed to parse outline: ${it.message}", it)
             },
