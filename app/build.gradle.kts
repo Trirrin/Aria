@@ -34,6 +34,7 @@ android {
 dependencies {
     implementation(project(":core:model"))
     implementation(project(":core:agent"))
+    implementation(project(":core:llm"))
     implementation(project(":data"))
 
     implementation(libs.core.ktx)
@@ -43,4 +44,8 @@ dependencies {
     implementation(libs.compose.material3)
     implementation(libs.activity.compose)
     implementation(libs.lifecycle.viewmodel.compose)
+    implementation(libs.lifecycle.runtime.compose)
+    implementation(libs.kotlinx.datetime)
+    implementation(libs.kotlinx.serialization.json)
+    implementation(libs.room.runtime)
 }
