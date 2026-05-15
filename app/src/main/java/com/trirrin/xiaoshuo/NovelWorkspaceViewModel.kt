@@ -3,6 +3,7 @@ package com.trirrin.xiaoshuo
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.trirrin.xiaoshuo.agent.AgentPipeline
 import com.trirrin.xiaoshuo.agent.PipelineEvent
 import com.trirrin.xiaoshuo.data.GenerationSettings
 import com.trirrin.xiaoshuo.data.GenerationSettingsRepository
@@ -14,39 +15,76 @@ import com.trirrin.xiaoshuo.model.Novel
 import com.trirrin.xiaoshuo.model.NovelStatus
 import com.trirrin.xiaoshuo.model.Scene
 import com.trirrin.xiaoshuo.model.SceneStatus
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.datetime.Clock
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class NovelWorkspaceViewModel(
     private val novelRepository: NovelRepository,
     private val settingsRepository: GenerationSettingsRepository,
-    private val pipelineFactory: (GenerationSettings) -> com.trirrin.xiaoshuo.agent.AgentPipeline,
+    private val pipelineFactory: (GenerationSettings) -> AgentPipeline,
 ) : ViewModel() {
     private val workflow = MutableStateFlow(WorkflowState())
     private val selectedNovelId = MutableStateFlow<String?>(null)
+    private val selectedChapterId = MutableStateFlow<String?>(null)
+    private val selectedSceneId = MutableStateFlow<String?>(null)
 
     private val novels = novelRepository.observeNovels()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    private val selection = combine(novels, selectedNovelId, selectedChapterId, selectedSceneId) { novelList, novelId, chapterId, sceneId ->
+        val selectedNovel = novelList.firstOrNull { it.id == novelId } ?: novelList.firstOrNull()
+        SelectionState(
+            selectedNovel = selectedNovel,
+            selectedChapterId = chapterId,
+            selectedSceneId = sceneId,
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SelectionState())
+
+    private val chapters = selection.flatMapLatest { state ->
+        state.selectedNovel?.let { novelRepository.observeChapters(it.id) } ?: flowOf(emptyList())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    private val selectedChapter = combine(chapters, selection) { chapterList, state ->
+        chapterList.firstOrNull { it.id == state.selectedChapterId } ?: chapterList.firstOrNull()
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    private val scenes = selectedChapter.flatMapLatest { chapter ->
+        chapter?.let { novelRepository.observeScenes(it.id) } ?: flowOf(emptyList())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
     val settings = settingsRepository.settings
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), GenerationSettings())
 
-    val uiState: StateFlow<NovelWorkspaceUiState> = combine(
-        novels,
-        selectedNovelId,
-        settings,
-        workflow,
-    ) { novelList, selectedId, settings, workflow ->
-        val selectedNovel = novelList.firstOrNull { it.id == selectedId } ?: novelList.firstOrNull()
-        NovelWorkspaceUiState(
+    private val workspaceData = combine(novels, selection, chapters, selectedChapter, scenes) { novelList, selectionState, chapterList, chapter, sceneList ->
+        val selectedScene = sceneList.firstOrNull { it.id == selectionState.selectedSceneId } ?: sceneList.firstOrNull()
+        WorkspaceData(
             novels = novelList,
-            selectedNovel = selectedNovel,
+            selectedNovel = selectionState.selectedNovel,
+            chapters = chapterList,
+            selectedChapter = chapter,
+            scenes = sceneList,
+            selectedScene = selectedScene,
+        )
+    }
+
+    val uiState: StateFlow<NovelWorkspaceUiState> = combine(workspaceData, settings, workflow) { data, settings, workflow ->
+        NovelWorkspaceUiState(
+            novels = data.novels,
+            selectedNovel = data.selectedNovel,
+            chapters = data.chapters,
+            selectedChapter = data.selectedChapter,
+            scenes = data.scenes,
+            selectedScene = data.selectedScene,
             settings = settings,
             workflow = workflow,
         )
@@ -76,12 +114,25 @@ class NovelWorkspaceViewModel(
             )
             novelRepository.upsertNovel(novel)
             selectedNovelId.value = novel.id
+            selectedChapterId.value = null
+            selectedSceneId.value = null
             workflow.value = WorkflowState(events = listOf("Created ${novel.title}"))
         }
     }
 
     fun selectNovel(id: String) {
         selectedNovelId.value = id
+        selectedChapterId.value = null
+        selectedSceneId.value = null
+    }
+
+    fun selectChapter(id: String) {
+        selectedChapterId.value = id
+        selectedSceneId.value = null
+    }
+
+    fun selectScene(id: String) {
+        selectedSceneId.value = id
     }
 
     fun saveSettings(settings: GenerationSettings) {
@@ -113,16 +164,19 @@ class NovelWorkspaceViewModel(
                 )
             }
             chapters.forEach { novelRepository.upsertChapter(it) }
+            selectedChapterId.value = chapters.firstOrNull()?.id
+            selectedSceneId.value = null
             appendEvent("Saved outline and ${chapters.size} chapter shells")
         }
     }
 
-    fun generateFirstSynopsis() {
-        runPipelineStep("Generating first chapter synopsis") { novel, settings ->
+    fun generateSelectedSynopsis() {
+        runPipelineStep("Generating chapter synopsis") { novel, settings ->
             require(settings.apiKey.isNotBlank()) { "API key is required before generation" }
             require(novel.outline != null) { "Generate an outline first" }
             val chapters = novelRepository.getChapters(novel.id)
-            val chapter = chapters.firstOrNull() ?: error("No chapter shell exists")
+            val currentChapterId = uiState.value.selectedChapter?.id
+            val chapter = chapters.firstOrNull { it.id == currentChapterId } ?: chapters.firstOrNull() ?: error("No chapter shell exists")
             val pipeline = pipelineFactory(settings)
             val (synopsis, review) = pipeline.generateChapterSynopsis(novel, chapter, chapters)
             val generated = synopsis ?: error("Synopsis generation failed")
@@ -143,24 +197,37 @@ class NovelWorkspaceViewModel(
                     ),
                 )
             }
+            selectedChapterId.value = chapter.id
+            selectedSceneId.value = null
             appendEvent("Saved chapter synopsis and ${generated.sceneBreakdowns.size} scene shells")
         }
     }
 
-    fun generateFirstScene() {
-        runPipelineStep("Generating first scene") { novel, settings ->
+    fun generateSelectedScene() {
+        runPipelineStep("Generating scene") { novel, settings ->
             require(settings.apiKey.isNotBlank()) { "API key is required before generation" }
             val chapters = novelRepository.getChapters(novel.id)
-            val chapter = chapters.firstOrNull { it.synopsis != null } ?: error("Generate a chapter synopsis first")
+            val currentChapterId = uiState.value.selectedChapter?.id
+            val chapter = chapters.firstOrNull { it.id == currentChapterId }
+                ?: chapters.firstOrNull { it.synopsis != null }
+                ?: error("Generate a chapter synopsis first")
             val scenes = novelRepository.getScenes(chapter.id)
-            val scene = scenes.firstOrNull() ?: error("No scene shell exists")
+            val currentSceneId = uiState.value.selectedScene?.id
+            val scene = scenes.firstOrNull { it.id == currentSceneId } ?: scenes.firstOrNull() ?: error("No scene shell exists")
+            val previousSceneEnding = scenes
+                .filter { it.order < scene.order && it.text.isNotBlank() }
+                .maxByOrNull { it.order }
+                ?.text
+                ?.split(Regex("\\s+"))
+                ?.takeLast(200)
+                ?.joinToString(" ")
             val pipeline = pipelineFactory(settings)
             var generatedText = scene.text
             var generatedWordCount = scene.wordCount
             var updatedBible = novel.bible
 
             novelRepository.upsertScene(scene.copy(status = SceneStatus.GENERATING))
-            pipeline.generateScene(novel, chapter, scene).collect { event ->
+            pipeline.generateScene(novel, chapter, scene, previousSceneEnding).collect { event ->
                 appendPipelineEvent(event)
                 when (event) {
                     is PipelineEvent.SceneTextComplete -> {
@@ -180,6 +247,8 @@ class NovelWorkspaceViewModel(
                 ),
             )
             novelRepository.upsertNovel(novel.copy(bible = updatedBible, updatedAt = Clock.System.now()))
+            selectedChapterId.value = chapter.id
+            selectedSceneId.value = scene.id
             appendEvent("Saved scene text and Bible updates")
         }
     }
@@ -238,9 +307,28 @@ class NovelWorkspaceViewModel(
     }
 }
 
+private data class WorkspaceData(
+    val novels: List<Novel> = emptyList(),
+    val selectedNovel: Novel? = null,
+    val chapters: List<Chapter> = emptyList(),
+    val selectedChapter: Chapter? = null,
+    val scenes: List<Scene> = emptyList(),
+    val selectedScene: Scene? = null,
+)
+
+private data class SelectionState(
+    val selectedNovel: Novel? = null,
+    val selectedChapterId: String? = null,
+    val selectedSceneId: String? = null,
+)
+
 data class NovelWorkspaceUiState(
     val novels: List<Novel> = emptyList(),
     val selectedNovel: Novel? = null,
+    val chapters: List<Chapter> = emptyList(),
+    val selectedChapter: Chapter? = null,
+    val scenes: List<Scene> = emptyList(),
+    val selectedScene: Scene? = null,
     val settings: GenerationSettings,
     val workflow: WorkflowState = WorkflowState(),
 )
