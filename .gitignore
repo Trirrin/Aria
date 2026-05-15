@@ -1,0 +1,19 @@
+# Gradle / Android build outputs
+.gradle/
+**/build/
+.kotlin/
+.cxx/
+.externalNativeBuild/
+*.apk
+*.aab
+*.ap_
+
+# IDE / local config
+.idea/
+*.iml
+local.properties
+.DS_Store
+
+# Local tool state
+.codex
+.claude/settings.local.json
