@@ -94,6 +94,9 @@ class MainActivity : ComponentActivity() {
                     onGenerateOutline = viewModel::generateOutline,
                     onGenerateSynopsis = viewModel::generateSelectedSynopsis,
                     onGenerateScene = viewModel::generateSelectedScene,
+                    onSaveOutline = viewModel::saveOutlineDraft,
+                    onSaveSynopsis = viewModel::saveChapterSynopsisDraft,
+                    onSaveSceneText = viewModel::saveSceneText,
                 )
             }
         }
@@ -128,6 +131,9 @@ private fun XiaoShuoApp(
     onGenerateOutline: () -> Unit,
     onGenerateSynopsis: () -> Unit,
     onGenerateScene: () -> Unit,
+    onSaveOutline: (OutlineDraft) -> Unit,
+    onSaveSynopsis: (ChapterSynopsisDraft) -> Unit,
+    onSaveSceneText: (String) -> Unit,
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
     Scaffold(
@@ -155,8 +161,8 @@ private fun XiaoShuoApp(
             }
             when (WorkspaceTab.entries[selectedTab]) {
                 WorkspaceTab.Library -> LibraryScreen(state, onCreateNovel, onSelectNovel)
-                WorkspaceTab.Outline -> OutlineScreen(state, onGenerateOutline)
-                WorkspaceTab.Draft -> DraftScreen(state, onSelectChapter, onSelectScene, onGenerateSynopsis, onGenerateScene)
+                WorkspaceTab.Outline -> OutlineScreen(state, onGenerateOutline, onSaveOutline)
+                WorkspaceTab.Draft -> DraftScreen(state, onSelectChapter, onSelectScene, onGenerateSynopsis, onGenerateScene, onSaveSynopsis, onSaveSceneText)
                 WorkspaceTab.Bible -> BibleScreen(state.selectedNovel)
                 WorkspaceTab.Settings -> SettingsScreen(state.settings, onSaveSettings)
             }
@@ -297,7 +303,11 @@ private fun CreateNovelForm(onCreateNovel: (String, String, Genre, String) -> Un
 }
 
 @Composable
-private fun OutlineScreen(state: NovelWorkspaceUiState, onGenerateOutline: () -> Unit) {
+private fun OutlineScreen(
+    state: NovelWorkspaceUiState,
+    onGenerateOutline: () -> Unit,
+    onSaveOutline: (OutlineDraft) -> Unit,
+) {
     val novel = state.selectedNovel
     Row(
         modifier = Modifier
@@ -327,23 +337,7 @@ private fun OutlineScreen(state: NovelWorkspaceUiState, onGenerateOutline: () ->
             if (outline == null) {
                 EmptyText("No outline generated.")
             } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    item {
-                        Text(outline.premise, style = MaterialTheme.typography.bodyMedium)
-                    }
-                    item {
-                        Text("Plot Points", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                    }
-                    items(outline.majorPlotPoints) { point ->
-                        CompactBlock(point.name, "${(point.position * 100).toInt()}% - ${point.description}")
-                    }
-                    item {
-                        Text("Chapters", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                    }
-                    items(outline.chapterBriefs) { brief ->
-                        ChapterBriefBlock(brief)
-                    }
-                }
+                OutlineEditor(outline.toDraft(), state.workflow.isBusy, onSaveOutline)
             }
         }
     }
@@ -356,6 +350,8 @@ private fun DraftScreen(
     onSelectScene: (String) -> Unit,
     onGenerateSynopsis: () -> Unit,
     onGenerateScene: () -> Unit,
+    onSaveSynopsis: (ChapterSynopsisDraft) -> Unit,
+    onSaveSceneText: (String) -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -390,7 +386,7 @@ private fun DraftScreen(
                     Text("Synopsis")
                 }
             }
-            ChapterSynopsis(state.selectedChapter)
+            ChapterSynopsisEditor(state.selectedChapter, state.workflow.isBusy, onSaveSynopsis)
             if (state.scenes.isEmpty()) {
                 EmptyText("No scene breakdowns yet.")
             } else {
@@ -416,24 +412,151 @@ private fun DraftScreen(
                     Text("Generate")
                 }
             }
-            SceneEditor(state.selectedScene)
+            SceneEditor(state.selectedScene, state.workflow.isBusy, onSaveSceneText)
         }
     }
 }
 
 @Composable
-private fun ChapterSynopsis(chapter: Chapter?) {
-    val synopsis = chapter?.synopsis ?: return
-    CompactBlock("Goal", synopsis.chapterGoal)
-    CompactBlock("Ending", synopsis.chapterEnding)
+private fun OutlineEditor(initialDraft: OutlineDraft, isBusy: Boolean, onSave: (OutlineDraft) -> Unit) {
+    var premise by remember(initialDraft) { mutableStateOf(initialDraft.premise) }
+    var plotPoints by remember(initialDraft) { mutableStateOf(initialDraft.majorPlotPoints) }
+    var characterArcs by remember(initialDraft) { mutableStateOf(initialDraft.characterArcs) }
+    var thematicStructure by remember(initialDraft) { mutableStateOf(initialDraft.thematicStructure) }
+    var chapters by remember(initialDraft) { mutableStateOf(initialDraft.chapters) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        OutlinedTextField(
+            value = premise,
+            onValueChange = { premise = it },
+            label = { Text("Premise") },
+            minLines = 3,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = plotPoints,
+            onValueChange = { plotPoints = it },
+            label = { Text("Plot points: name | position | description") },
+            minLines = 5,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = characterArcs,
+            onValueChange = { characterArcs = it },
+            label = { Text("Character arcs, one per line") },
+            minLines = 4,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = thematicStructure,
+            onValueChange = { thematicStructure = it },
+            label = { Text("Thematic structure") },
+            minLines = 3,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = chapters,
+            onValueChange = { chapters = it },
+            label = { Text("Chapters: index | title | plot beats | purpose") },
+            minLines = 10,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Button(
+            onClick = {
+                onSave(
+                    OutlineDraft(
+                        premise = premise,
+                        majorPlotPoints = plotPoints,
+                        characterArcs = characterArcs,
+                        thematicStructure = thematicStructure,
+                        chapters = chapters,
+                    ),
+                )
+            },
+            enabled = !isBusy && premise.isNotBlank() && chapters.isNotBlank(),
+        ) {
+            Text("Save Outline")
+        }
+    }
 }
 
 @Composable
-private fun SceneEditor(scene: Scene?) {
+private fun ChapterSynopsisEditor(
+    chapter: Chapter?,
+    isBusy: Boolean,
+    onSave: (ChapterSynopsisDraft) -> Unit,
+) {
+    val synopsis = chapter?.synopsis
+    if (synopsis == null) {
+        EmptyText("No chapter synopsis yet.")
+        return
+    }
+
+    val initialDraft = synopsis.toDraft()
+    var goal by remember(chapter.id, initialDraft) { mutableStateOf(initialDraft.chapterGoal) }
+    var scenes by remember(chapter.id, initialDraft) { mutableStateOf(initialDraft.sceneBreakdowns) }
+    var ending by remember(chapter.id, initialDraft) { mutableStateOf(initialDraft.chapterEnding) }
+    var transition by remember(chapter.id, initialDraft) { mutableStateOf(initialDraft.transitionNotes) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        OutlinedTextField(
+            value = goal,
+            onValueChange = { goal = it },
+            label = { Text("Chapter goal") },
+            minLines = 2,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = scenes,
+            onValueChange = { scenes = it },
+            label = { Text("Scenes: index | target words | synopsis") },
+            minLines = 6,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = ending,
+            onValueChange = { ending = it },
+            label = { Text("Chapter ending") },
+            minLines = 2,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = transition,
+            onValueChange = { transition = it },
+            label = { Text("Transition notes") },
+            minLines = 2,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Button(
+            onClick = {
+                onSave(
+                    ChapterSynopsisDraft(
+                        chapterGoal = goal,
+                        sceneBreakdowns = scenes,
+                        chapterEnding = ending,
+                        transitionNotes = transition,
+                    ),
+                )
+            },
+            enabled = !isBusy && goal.isNotBlank() && scenes.isNotBlank(),
+        ) {
+            Text("Save Synopsis")
+        }
+    }
+}
+
+@Composable
+private fun SceneEditor(scene: Scene?, isBusy: Boolean, onSaveText: (String) -> Unit) {
     if (scene == null) {
         EmptyText("Select a scene.")
         return
     }
+    var text by remember(scene.id, scene.text) { mutableStateOf(scene.text) }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -445,11 +568,19 @@ private fun SceneEditor(scene: Scene?) {
         if (reviewNotes?.isNotBlank() == true) {
             CompactBlock("Review", reviewNotes)
         }
-        Text(
-            text = scene.text.ifBlank { "No prose generated." },
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (scene.text.isBlank()) 0.62f else 1f),
+        OutlinedTextField(
+            value = text,
+            onValueChange = { text = it },
+            label = { Text("Scene prose") },
+            minLines = 18,
+            modifier = Modifier.fillMaxWidth(),
         )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(onClick = { onSaveText(text) }, enabled = !isBusy) {
+                Text("Save Prose")
+            }
+            Text("${countDraftWords(text)} words", style = MaterialTheme.typography.labelMedium)
+        }
     }
 }
 
@@ -751,6 +882,10 @@ private fun EmptyText(text: String) {
         style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.62f),
     )
+}
+
+private fun countDraftWords(text: String): Int {
+    return text.trim().split(Regex("\\s+")).count { it.isNotBlank() }
 }
 
 private fun bibleCount(novel: Novel): Int {

@@ -9,11 +9,16 @@ import com.trirrin.xiaoshuo.data.GenerationSettings
 import com.trirrin.xiaoshuo.data.GenerationSettingsRepository
 import com.trirrin.xiaoshuo.data.NovelRepository
 import com.trirrin.xiaoshuo.model.Chapter
+import com.trirrin.xiaoshuo.model.ChapterBrief
 import com.trirrin.xiaoshuo.model.ChapterStatus
+import com.trirrin.xiaoshuo.model.ChapterSynopsis
 import com.trirrin.xiaoshuo.model.Genre
 import com.trirrin.xiaoshuo.model.Novel
+import com.trirrin.xiaoshuo.model.NovelOutline
 import com.trirrin.xiaoshuo.model.NovelStatus
+import com.trirrin.xiaoshuo.model.PlotPoint
 import com.trirrin.xiaoshuo.model.Scene
+import com.trirrin.xiaoshuo.model.SceneBreakdown
 import com.trirrin.xiaoshuo.model.SceneStatus
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -142,6 +147,79 @@ class NovelWorkspaceViewModel(
         }
     }
 
+    fun saveOutlineDraft(draft: OutlineDraft) {
+        val novel = uiState.value.selectedNovel ?: run {
+            setError("Create or select a novel first")
+            return
+        }
+        val outline = draft.toOutline()
+        if (outline.premise.isBlank() || outline.chapterBriefs.isEmpty()) {
+            setError("Premise and at least one chapter are required")
+            return
+        }
+
+        viewModelScope.launch {
+            val now = Clock.System.now()
+            novelRepository.upsertNovel(
+                novel.copy(
+                    outline = outline,
+                    status = NovelStatus.OUTLINE_COMPLETE,
+                    updatedAt = now,
+                ),
+            )
+            saveChapterShells(novel.id, outline.chapterBriefs)
+            selectedChapterId.value = selectedChapterId.value ?: outline.chapterBriefs.firstOrNull()?.let { brief ->
+                novelRepository.getChapters(novel.id).firstOrNull { it.order == brief.chapterIndex }?.id
+            }
+            appendEvent("Outline edits saved")
+        }
+    }
+
+    fun saveChapterSynopsisDraft(draft: ChapterSynopsisDraft) {
+        val novel = uiState.value.selectedNovel ?: run {
+            setError("Create or select a novel first")
+            return
+        }
+        val chapter = uiState.value.selectedChapter ?: run {
+            setError("Select a chapter first")
+            return
+        }
+        val synopsis = draft.toSynopsis()
+        if (synopsis.chapterGoal.isBlank() || synopsis.sceneBreakdowns.isEmpty()) {
+            setError("Chapter goal and at least one scene are required")
+            return
+        }
+
+        viewModelScope.launch {
+            novelRepository.upsertChapter(
+                chapter.copy(
+                    synopsis = synopsis,
+                    status = ChapterStatus.SYNOPSIS_GENERATED,
+                ),
+            )
+            saveSceneShells(novel.id, chapter.id, synopsis.sceneBreakdowns)
+            selectedSceneId.value = selectedSceneId.value ?: novelRepository.getScenes(chapter.id).firstOrNull()?.id
+            appendEvent("Chapter synopsis edits saved")
+        }
+    }
+
+    fun saveSceneText(text: String) {
+        val scene = uiState.value.selectedScene ?: run {
+            setError("Select a scene first")
+            return
+        }
+        viewModelScope.launch {
+            novelRepository.upsertScene(
+                scene.copy(
+                    text = text,
+                    wordCount = countWords(text),
+                    status = if (text.isBlank()) SceneStatus.PENDING else SceneStatus.GENERATED,
+                ),
+            )
+            appendEvent("Scene text saved")
+        }
+    }
+
     fun generateOutline() {
         runPipelineStep("Generating outline") { novel, settings ->
             require(settings.apiKey.isNotBlank()) { "API key is required before generation" }
@@ -155,16 +233,9 @@ class NovelWorkspaceViewModel(
                 updatedAt = Clock.System.now(),
             )
             novelRepository.upsertNovel(updated)
-            val chapters = generated.chapterBriefs.map { brief ->
-                Chapter(
-                    novelId = novel.id,
-                    order = brief.chapterIndex,
-                    title = brief.title,
-                    status = ChapterStatus.PENDING,
-                )
-            }
-            chapters.forEach { novelRepository.upsertChapter(it) }
-            selectedChapterId.value = chapters.firstOrNull()?.id
+            saveChapterShells(novel.id, generated.chapterBriefs)
+            val chapters = novelRepository.getChapters(novel.id)
+            selectedChapterId.value = chapters.firstOrNull { it.order == generated.chapterBriefs.firstOrNull()?.chapterIndex }?.id
             selectedSceneId.value = null
             appendEvent("Saved outline and ${chapters.size} chapter shells")
         }
@@ -186,17 +257,7 @@ class NovelWorkspaceViewModel(
                 status = ChapterStatus.SYNOPSIS_GENERATED,
             )
             novelRepository.upsertChapter(updatedChapter)
-            generated.sceneBreakdowns.forEach { breakdown ->
-                novelRepository.upsertScene(
-                    Scene(
-                        novelId = novel.id,
-                        chapterId = chapter.id,
-                        order = breakdown.sceneIndex,
-                        synopsis = breakdown.synopsis,
-                        status = SceneStatus.PENDING,
-                    ),
-                )
-            }
+            saveSceneShells(novel.id, chapter.id, generated.sceneBreakdowns)
             selectedChapterId.value = chapter.id
             selectedSceneId.value = null
             appendEvent("Saved chapter synopsis and ${generated.sceneBreakdowns.size} scene shells")
@@ -253,6 +314,39 @@ class NovelWorkspaceViewModel(
         }
     }
 
+    private suspend fun saveChapterShells(novelId: String, chapterBriefs: List<ChapterBrief>) {
+        val existingByOrder = novelRepository.getChapters(novelId).associateBy { it.order }
+        chapterBriefs.forEach { brief ->
+            val existing = existingByOrder[brief.chapterIndex]
+            novelRepository.upsertChapter(
+                existing?.copy(title = brief.title)
+                    ?: Chapter(
+                        novelId = novelId,
+                        order = brief.chapterIndex,
+                        title = brief.title,
+                        status = ChapterStatus.PENDING,
+                    ),
+            )
+        }
+    }
+
+    private suspend fun saveSceneShells(novelId: String, chapterId: String, breakdowns: List<SceneBreakdown>) {
+        val existingByOrder = novelRepository.getScenes(chapterId).associateBy { it.order }
+        breakdowns.forEach { breakdown ->
+            val existing = existingByOrder[breakdown.sceneIndex]
+            novelRepository.upsertScene(
+                existing?.copy(synopsis = breakdown.synopsis)
+                    ?: Scene(
+                        novelId = novelId,
+                        chapterId = chapterId,
+                        order = breakdown.sceneIndex,
+                        synopsis = breakdown.synopsis,
+                        status = SceneStatus.PENDING,
+                    ),
+            )
+        }
+    }
+
     private fun runPipelineStep(
         busyMessage: String,
         block: suspend (Novel, GenerationSettings) -> Unit,
@@ -305,6 +399,106 @@ class NovelWorkspaceViewModel(
             ) as T
         }
     }
+}
+
+data class OutlineDraft(
+    val premise: String,
+    val majorPlotPoints: String,
+    val characterArcs: String,
+    val thematicStructure: String,
+    val chapters: String,
+)
+
+data class ChapterSynopsisDraft(
+    val chapterGoal: String,
+    val sceneBreakdowns: String,
+    val chapterEnding: String,
+    val transitionNotes: String,
+)
+
+fun NovelOutline.toDraft(): OutlineDraft {
+    return OutlineDraft(
+        premise = premise,
+        majorPlotPoints = majorPlotPoints.joinToString("\n") { point ->
+            listOf(point.name, point.position.toString(), point.description).joinToString(" | ")
+        },
+        characterArcs = characterArcs.joinToString("\n"),
+        thematicStructure = thematicStructure,
+        chapters = chapterBriefs.joinToString("\n") { brief ->
+            listOf(brief.chapterIndex.toString(), brief.title, brief.plotBeats, brief.purposeInStory).joinToString(" | ")
+        },
+    )
+}
+
+fun ChapterSynopsis.toDraft(): ChapterSynopsisDraft {
+    return ChapterSynopsisDraft(
+        chapterGoal = chapterGoal,
+        sceneBreakdowns = sceneBreakdowns.joinToString("\n") { scene ->
+            listOf(scene.sceneIndex.toString(), scene.targetWordCount.toString(), scene.synopsis).joinToString(" | ")
+        },
+        chapterEnding = chapterEnding,
+        transitionNotes = transitionNotes,
+    )
+}
+
+private fun OutlineDraft.toOutline(): NovelOutline {
+    val chapters = chapters.lines().mapNotNull { line -> parseChapterBrief(line) }
+    return NovelOutline(
+        premise = premise.trim(),
+        majorPlotPoints = majorPlotPoints.lines().mapNotNull { line -> parsePlotPoint(line) },
+        characterArcs = characterArcs.lines().map { it.trim() }.filter { it.isNotBlank() },
+        thematicStructure = thematicStructure.trim(),
+        chapterCount = chapters.size,
+        chapterBriefs = chapters,
+    )
+}
+
+private fun ChapterSynopsisDraft.toSynopsis(): ChapterSynopsis {
+    return ChapterSynopsis(
+        chapterGoal = chapterGoal.trim(),
+        sceneBreakdowns = sceneBreakdowns.lines().mapNotNull { line -> parseSceneBreakdown(line) },
+        chapterEnding = chapterEnding.trim(),
+        transitionNotes = transitionNotes.trim(),
+    )
+}
+
+private fun parsePlotPoint(line: String): PlotPoint? {
+    val parts = splitDraftLine(line, 3)
+    if (parts.size < 3) return null
+    return PlotPoint(
+        name = parts[0],
+        position = parts[1].toFloatOrNull()?.coerceIn(0f, 1f) ?: 0f,
+        description = parts[2],
+    )
+}
+
+private fun parseChapterBrief(line: String): ChapterBrief? {
+    val parts = splitDraftLine(line, 4)
+    if (parts.size < 4) return null
+    return ChapterBrief(
+        chapterIndex = parts[0].toIntOrNull() ?: return null,
+        title = parts[1],
+        plotBeats = parts[2],
+        purposeInStory = parts[3],
+    )
+}
+
+private fun parseSceneBreakdown(line: String): SceneBreakdown? {
+    val parts = splitDraftLine(line, 3)
+    if (parts.size < 3) return null
+    return SceneBreakdown(
+        sceneIndex = parts[0].toIntOrNull() ?: return null,
+        targetWordCount = parts[1].toIntOrNull() ?: 2500,
+        synopsis = parts[2],
+    )
+}
+
+private fun splitDraftLine(line: String, limit: Int): List<String> {
+    return line.split("|", limit = limit).map { it.trim() }.filter { it.isNotBlank() }
+}
+
+private fun countWords(text: String): Int {
+    return text.trim().split(Regex("\\s+")).count { it.isNotBlank() }
 }
 
 private data class WorkspaceData(
