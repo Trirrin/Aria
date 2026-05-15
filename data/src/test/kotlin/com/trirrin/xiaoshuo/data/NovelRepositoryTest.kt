@@ -3,12 +3,15 @@ package com.trirrin.xiaoshuo.data
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import com.trirrin.xiaoshuo.model.BibleConflict
+import com.trirrin.xiaoshuo.model.BibleConflictSection
 import com.trirrin.xiaoshuo.model.BibleEntrySource
 import com.trirrin.xiaoshuo.model.Chapter
 import com.trirrin.xiaoshuo.model.ChapterBrief
 import com.trirrin.xiaoshuo.model.ChapterStatus
 import com.trirrin.xiaoshuo.model.ChapterSynopsis
 import com.trirrin.xiaoshuo.model.CharacterEntry
+import com.trirrin.xiaoshuo.model.LocationEntry
 import com.trirrin.xiaoshuo.model.Genre
 import com.trirrin.xiaoshuo.model.NarrativeTense
 import com.trirrin.xiaoshuo.model.NarrativeVoice
@@ -154,6 +157,55 @@ class NovelRepositoryTest {
         assertEquals(10, usage.inputTokens)
         assertEquals(20, usage.outputTokens)
         assertEquals(0.03, usage.estimatedCostUsd, 0.0001)
+    }
+
+    @Test
+    fun `novel bible roundtrip preserves user canon and conflict metadata`() = runTest {
+        val novel = sampleNovel().copy(
+            bible = NovelBible(
+                characters = listOf(
+                    CharacterEntry(
+                        id = "char-1",
+                        name = "Mara",
+                        description = "User-authored lead.",
+                        currentState = "unhurt",
+                        source = BibleEntrySource.USER,
+                        sourceChapterId = "chapter-1",
+                        sourceSceneId = "scene-1",
+                    ),
+                ),
+                locations = listOf(
+                    LocationEntry(
+                        id = "loc-1",
+                        name = "Archive",
+                        description = "A locked public memory vault.",
+                        source = BibleEntrySource.USER,
+                    ),
+                ),
+                conflicts = listOf(
+                    BibleConflict(
+                        id = "conflict-1",
+                        section = BibleConflictSection.CHARACTERS,
+                        entryId = "char-1",
+                        title = "Mara",
+                        field = "currentState",
+                        existingValue = "unhurt",
+                        incomingValue = "wounded",
+                        sourceChapterId = "chapter-1",
+                        sourceSceneId = "scene-2",
+                    ),
+                ),
+            ),
+        )
+
+        repository.upsertNovel(novel)
+
+        val savedBible = repository.getNovel(novel.id)?.bible
+        assertEquals(BibleEntrySource.USER, savedBible?.characters?.single()?.source)
+        assertEquals("scene-1", savedBible?.characters?.single()?.sourceSceneId)
+        assertEquals("Archive", savedBible?.locations?.single()?.name)
+        assertEquals("conflict-1", savedBible?.conflicts?.single()?.id)
+        assertEquals("wounded", savedBible?.conflicts?.single()?.incomingValue)
     }
 
     private fun sampleNovel(): Novel {

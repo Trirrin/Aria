@@ -15,6 +15,7 @@
 
     <string name="section_novels">Novels</string>
     <string name="section_new_novel">New Novel</string>
+    <string name="section_import_from_chat">Import From Chat</string>
     <string name="section_project">Project</string>
     <string name="section_outline">Outline</string>
     <string name="section_chapters">Chapters</string>
@@ -33,6 +34,10 @@
     <string name="section_review">Review</string>
     <string name="section_issues">Issues</string>
     <string name="section_suggested_fixes">Suggested fixes</string>
+    <string name="dialog_overwrite_title">Confirm Regeneration</string>
+    <string name="dialog_overwrite_outline_message">Regenerating the outline will replace the saved outline and may change chapter shells. A revision snapshot will be kept.</string>
+    <string name="dialog_overwrite_synopsis_message">Regenerating this synopsis will replace the saved chapter synopsis and scene breakdowns. Existing scene prose is preserved.</string>
+    <string name="dialog_overwrite_scene_message">Regenerating this scene will replace the saved prose. A revision snapshot will be kept.</string>
 
     <string name="empty_no_novels">No novels yet.</string>
     <string name="empty_select_novel_first">Create or select a novel first.</string>
@@ -68,6 +73,9 @@
     <string name="action_keep_canon">Keep Canon</string>
     <string name="action_use_incoming">Use Incoming</string>
     <string name="action_cancel">Cancel</string>
+    <string name="action_continue">Continue</string>
+    <string name="action_copy_import_prompt">Copy Import Prompt</string>
+    <string name="action_import_from_chat">Import From Chat</string>
 
     <string name="share_markdown">Share Markdown</string>
     <string name="share_txt">Share TXT</string>
@@ -128,6 +136,8 @@
     <string name="field_current_state">Current state</string>
     <string name="field_chronological_order">Chronological order</string>
     <string name="field_extra">Extra</string>
+    <string name="field_chat_import_prompt">Prompt for your old AI</string>
+    <string name="field_chat_import_json">Paste the JSON summary here</string>
 
     <string name="genre_fantasy">Fantasy</string>
     <string name="genre_sci_fi">Science Fiction</string>

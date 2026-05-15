@@ -68,7 +68,7 @@ The app supports:
 - OpenAI-compatible Chat Completions API.
 - Per-agent model selection for outline, synopsis, prose, review, and continuity extraction.
 
-Settings are stored with DataStore. API keys are currently local settings data; do not log them and do not commit test keys.
+Settings are stored with DataStore. API keys are encrypted at rest with Android Keystore-backed AES-GCM, with legacy plaintext settings migrated on save; do not log them and do not commit test keys.
 
 ## Current Status
 
@@ -130,7 +130,7 @@ Settings are stored with DataStore. API keys are currently local settings data; 
 
 ### Not Yet Implemented
 
-- Background generation outside the active workspace lifecycle.
+- Full process-death-safe background retry/resume for generation jobs.
 
 ## Implementation Roadmap
 
@@ -158,10 +158,10 @@ Done:
 - DataStore generation settings.
 - Manual app container.
 
-Remaining cleanup:
+Cleanup completed:
 
-- Add repository tests.
-- Consider encrypted storage for API keys before serious distribution.
+- Repository tests cover persisted graph, recovery, snapshots, token usage, Bible metadata, and settings key migration.
+- API keys are encrypted before storage, while legacy plaintext keys remain readable until the next save migrates them.
 
 ### Phase 3: Compose MVP Workspace - Done
 
@@ -178,7 +178,7 @@ Done:
 - Provider/model settings.
 - Run status/error display.
 
-Known weakness: this is a generation workbench, not yet a satisfying writing editor.
+Known weakness: mobile polish can still improve, but the workspace now supports editing, import, review, history, export, queueing, and guarded regeneration.
 
 ### Phase 4: Human Editing Loop - Done
 
@@ -234,9 +234,9 @@ Done:
 6. Add conflict resolution controls for keeping canon or using incoming extracted facts.
 7. Add relevance preview using `BibleFilter` for the selected chapter/scene context.
 
-Remaining cleanup:
+Cleanup completed:
 
-- Add tests for Bible CRUD, user-canon preservation, and conflict warnings.
+- Added tests for Bible persistence, user-canon preservation, and conflict warning generation during merges.
 
 Acceptance criteria:
 
@@ -322,7 +322,7 @@ Acceptance criteria:
 | Bible conflict | preserve user canon, flag conflict, let user resolve | implemented |
 | Large Bible | relevance scoring and token budget | implemented |
 | Interrupted generation | recover scene status on restart | implemented; partial streamed drafts are preserved but reset to recoverable pending status |
-| Regeneration | do not destroy user edits without explicit confirmation | UI confirmation path still incomplete |
+| Regeneration | do not destroy user edits without explicit confirmation | implemented with ViewModel-gated overwrite confirmation and revision snapshots |
 | Missing API key | block generation with clear error | implemented |
 
 ## Verification Commands
@@ -355,6 +355,6 @@ Manual smoke path:
 
 ## Product Priorities
 
-The next highest-value work is UI polish and explicit overwrite confirmation for regeneration. The major non-UI hardening path is now covered by deterministic tests around parsing, provider streaming, repository recovery, and continuity context bounds.
+The next highest-value work is deeper mobile UI polish and process-death-safe background retry/resume. Explicit overwrite confirmation and the major non-UI hardening path are covered by deterministic tests around parsing, provider streaming, repository recovery, Bible conflict handling, settings key migration, and continuity context bounds.
 
 Do not invent infrastructure for sport. Keep tightening real breakage points as they appear, especially overwrite semantics and process-death behavior.

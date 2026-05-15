@@ -35,6 +35,7 @@ dependencies {
     implementation(project(":core:model"))
     implementation(project(":core:agent"))
     implementation(project(":core:llm"))
+    implementation(project(":core:prompt"))
     implementation(project(":data"))
 
     implementation(libs.core.ktx)

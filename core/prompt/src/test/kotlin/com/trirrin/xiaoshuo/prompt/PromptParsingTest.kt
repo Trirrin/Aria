@@ -94,6 +94,55 @@ class PromptParsingTest {
     }
 
     @Test
+    fun `chat import parser accepts fenced project json`() {
+        val raw = """
+            ```json
+            {
+              "title": "Ash Ledger",
+              "genre": "FANTASY",
+              "concept": "A tax clerk inherits a ledger that records debts owed by the dead.",
+              "themes": ["memory", "obligation"],
+              "styleGuide": {"narrativeVoice": "close third", "tense": "past", "proseStyle": "literary"},
+              "outline": {
+                "premise": "A clerk must settle supernatural debts before a city collapses.",
+                "majorPlotPoints": [{"name": "Inciting Incident", "description": "The ledger wakes.", "position": 0.12}],
+                "characterArcs": ["Ira learns mercy is not imbalance."],
+                "thematicStructure": "Debt becomes a language for grief.",
+                "chapters": [
+                  {
+                    "index": 1,
+                    "title": "The Ledger Wakes",
+                    "plotBeats": "Ira opens the forbidden ledger.",
+                    "purposeInStory": "Launch the curse.",
+                    "synopsis": {
+                      "chapterGoal": "Make Ira accept the ledger is real.",
+                      "chapterEnding": "A dead debtor knocks.",
+                      "transitionNotes": "Move into the first collection.",
+                      "scenes": [{"index": 1, "synopsis": "Ira audits a dead man's account.", "targetWordCount": 1200, "prose": "The ledger breathed ash."}]
+                    }
+                  }
+                ]
+              },
+              "bible": {
+                "characters": [{"name": "Ira", "aliases": [], "description": "A meticulous clerk.", "personality": "Cautious", "currentState": "Bound to the ledger", "relationships": []}],
+                "locations": [{"name": "Veyr", "description": "A river city.", "significance": "Main setting"}],
+                "timelineEvents": [{"description": "The ledger wakes.", "chronologicalOrder": 1}],
+                "worldRules": [{"category": "Debt magic", "rule": "Debts survive death.", "details": "Payment can be symbolic."}],
+                "themes": [{"name": "Obligation", "description": "Care distorted into debt.", "motifSymbols": ["ash"]}]
+              }
+            }
+            ```
+        """.trimIndent()
+
+        val payload = ChatImportPrompt.parseOutput(raw).getOrThrow()
+
+        assertEquals("Ash Ledger", payload.title)
+        assertEquals("The Ledger Wakes", payload.outline?.chapters?.single()?.title)
+        assertEquals("Ira", payload.bible.characters.single().name)
+        assertEquals("The ledger breathed ash.", payload.outline?.chapters?.single()?.synopsis?.scenes?.single()?.prose)
+    }
+
+    @Test
     fun `continuity parser returns bible diff`() {
         val raw = """
             {

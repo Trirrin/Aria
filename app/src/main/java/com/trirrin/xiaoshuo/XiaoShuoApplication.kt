@@ -17,6 +17,9 @@ import com.trirrin.xiaoshuo.data.XiaoShuoDatabase
 import com.trirrin.xiaoshuo.llm.LlmClientConfig
 import com.trirrin.xiaoshuo.llm.LlmClientFactory
 import com.trirrin.xiaoshuo.llm.LlmProvider
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 class XiaoShuoApplication : Application() {
     val container: AppContainer by lazy { AppContainer(this) }
@@ -24,9 +27,11 @@ class XiaoShuoApplication : Application() {
 
 class AppContainer(application: Application) {
     private val database = XiaoShuoDatabase.create(application)
+    private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     val novelRepository = NovelRepository(database.novelDao())
     val settingsRepository = GenerationSettingsRepository(application)
+    val generationCoordinator = GenerationCoordinator(applicationScope)
 
     fun createPipeline(settings: GenerationSettings): AgentPipeline {
         val provider = runCatching { LlmProvider.valueOf(settings.provider) }.getOrDefault(LlmProvider.ANTHROPIC)

@@ -29,6 +29,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -56,7 +57,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -78,6 +81,7 @@ import com.trirrin.xiaoshuo.model.NovelBible
 import com.trirrin.xiaoshuo.model.BibleConflict
 import com.trirrin.xiaoshuo.model.ReviewReport
 import com.trirrin.xiaoshuo.model.Scene
+import com.trirrin.xiaoshuo.prompt.ChatImportPrompt
 import java.io.File
 import java.util.Locale
 
@@ -103,6 +107,7 @@ class MainActivity : ComponentActivity() {
                 XiaoShuoApp(
                     state = state,
                     onCreateNovel = viewModel::createNovel,
+                    onImportFromChat = viewModel::importFromChat,
                     onSelectNovel = viewModel::selectNovel,
                     onSelectChapter = viewModel::selectChapter,
                     onSelectScene = viewModel::selectScene,
@@ -129,6 +134,8 @@ class MainActivity : ComponentActivity() {
                     onResolveBibleConflict = viewModel::resolveBibleConflict,
                     onRestoreSnapshot = viewModel::restoreRevisionSnapshot,
                     onDeleteSnapshot = viewModel::deleteRevisionSnapshot,
+                    onConfirmOverwrite = viewModel::confirmOverwrite,
+                    onCancelOverwrite = viewModel::cancelOverwrite,
                 )
             }
         }
@@ -156,6 +163,7 @@ private fun XiaoShuoTheme(content: @Composable () -> Unit) {
 private fun XiaoShuoApp(
     state: NovelWorkspaceUiState,
     onCreateNovel: (String, String, Genre, String) -> Unit,
+    onImportFromChat: (String) -> Unit,
     onSelectNovel: (String) -> Unit,
     onSelectChapter: (String) -> Unit,
     onSelectScene: (String) -> Unit,
@@ -182,8 +190,17 @@ private fun XiaoShuoApp(
     onResolveBibleConflict: (String, Boolean) -> Unit,
     onRestoreSnapshot: (String) -> Unit,
     onDeleteSnapshot: (String) -> Unit,
+    onConfirmOverwrite: () -> Unit,
+    onCancelOverwrite: () -> Unit,
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
+    state.workflow.overwriteConfirmation?.let { confirmation ->
+        OverwriteConfirmationDialog(
+            confirmation = confirmation,
+            onConfirm = onConfirmOverwrite,
+            onDismiss = onCancelOverwrite,
+        )
+    }
     Scaffold(
         topBar = {
             TopBar(state = state)
@@ -216,7 +233,7 @@ private fun XiaoShuoApp(
                     .fillMaxWidth(),
             ) {
                 when (WorkspaceTab.entries[selectedTab]) {
-                    WorkspaceTab.Library -> LibraryScreen(state, onCreateNovel, onSelectNovel)
+                    WorkspaceTab.Library -> LibraryScreen(state, onCreateNovel, onImportFromChat, onSelectNovel)
                     WorkspaceTab.Outline -> OutlineScreen(state, onGenerateOutline, onSaveOutline)
                     WorkspaceTab.Draft -> DraftScreen(
                         state = state,
@@ -253,6 +270,29 @@ private fun XiaoShuoApp(
             }
         }
     }
+}
+
+@Composable
+private fun OverwriteConfirmationDialog(
+    confirmation: OverwriteConfirmation,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.dialog_overwrite_title)) },
+        text = { Text(stringResource(confirmation.target.messageRes())) },
+        confirmButton = {
+            Button(onClick = onConfirm) {
+                Text(stringResource(R.string.action_continue))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
 }
 
 @Composable
@@ -344,6 +384,7 @@ private fun TopBar(state: NovelWorkspaceUiState) {
 private fun LibraryScreen(
     state: NovelWorkspaceUiState,
     onCreateNovel: (String, String, Genre, String) -> Unit,
+    onImportFromChat: (String) -> Unit,
     onSelectNovel: (String) -> Unit,
 ) {
     BoxWithConstraints(
@@ -378,6 +419,10 @@ private fun LibraryScreen(
         val newNovelForm: @Composable (Modifier) -> Unit = { modifier ->
             SurfacePanel(modifier = modifier.verticalScroll(rememberScrollState())) {
                 CreateNovelForm(onCreateNovel)
+                ImportFromChatForm(
+                    isBusy = state.workflow.isBusy,
+                    onImport = onImportFromChat,
+                )
             }
         }
 
@@ -465,6 +510,50 @@ private fun CreateNovelForm(onCreateNovel: (String, String, Genre, String) -> Un
         enabled = title.isNotBlank() && concept.isNotBlank(),
     ) {
         Text(stringResource(R.string.action_create))
+    }
+}
+
+@Composable
+private fun ImportFromChatForm(
+    isBusy: Boolean,
+    onImport: (String) -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    var rawImport by remember { mutableStateOf("") }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(stringResource(R.string.section_import_from_chat), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        OutlinedTextField(
+            value = ChatImportPrompt.extractionPrompt,
+            onValueChange = {},
+            label = { Text(stringResource(R.string.field_chat_import_prompt)) },
+            readOnly = true,
+            minLines = 6,
+            maxLines = 8,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedButton(
+            onClick = { clipboard.setText(AnnotatedString(ChatImportPrompt.extractionPrompt)) },
+            enabled = !isBusy,
+        ) {
+            Text(stringResource(R.string.action_copy_import_prompt))
+        }
+        OutlinedTextField(
+            value = rawImport,
+            onValueChange = { rawImport = it },
+            label = { Text(stringResource(R.string.field_chat_import_json)) },
+            minLines = 10,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Button(
+            onClick = {
+                onImport(rawImport)
+                rawImport = ""
+            },
+            enabled = !isBusy && rawImport.isNotBlank(),
+        ) {
+            Text(stringResource(R.string.action_import_from_chat))
+        }
     }
 }
 
@@ -1686,6 +1775,14 @@ private fun Genre.labelRes(): Int {
         Genre.HISTORICAL -> R.string.genre_historical
         Genre.HORROR -> R.string.genre_horror
         Genre.OTHER -> R.string.genre_other
+    }
+}
+
+private fun OverwriteTarget.messageRes(): Int {
+    return when (this) {
+        OverwriteTarget.OUTLINE -> R.string.dialog_overwrite_outline_message
+        OverwriteTarget.SYNOPSIS -> R.string.dialog_overwrite_synopsis_message
+        OverwriteTarget.SCENE -> R.string.dialog_overwrite_scene_message
     }
 }
 

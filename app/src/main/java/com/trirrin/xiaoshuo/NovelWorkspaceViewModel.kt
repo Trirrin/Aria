@@ -3,6 +3,7 @@ package com.trirrin.xiaoshuo
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CoroutineScope
 import com.trirrin.xiaoshuo.agent.AgentPipeline
 import com.trirrin.xiaoshuo.agent.AgentUsage
 import com.trirrin.xiaoshuo.agent.AgentResult
@@ -26,7 +27,11 @@ import com.trirrin.xiaoshuo.model.Novel
 import com.trirrin.xiaoshuo.model.NovelBible
 import com.trirrin.xiaoshuo.model.NovelOutline
 import com.trirrin.xiaoshuo.model.NovelStatus
+import com.trirrin.xiaoshuo.model.NarrativeTense
+import com.trirrin.xiaoshuo.model.NarrativeVoice
 import com.trirrin.xiaoshuo.model.PlotPoint
+import com.trirrin.xiaoshuo.model.ProseStyle
+import com.trirrin.xiaoshuo.model.Relationship
 import com.trirrin.xiaoshuo.model.ReviewReport
 import com.trirrin.xiaoshuo.model.ReviewStatus
 import com.trirrin.xiaoshuo.model.Scene
@@ -34,11 +39,13 @@ import com.trirrin.xiaoshuo.model.SceneTextSource
 import com.trirrin.xiaoshuo.model.ThemeEntry
 import com.trirrin.xiaoshuo.model.TimelineEvent
 import com.trirrin.xiaoshuo.model.WorldRule
+import com.trirrin.xiaoshuo.prompt.ChatImportPayload
+import com.trirrin.xiaoshuo.prompt.ChatImportPrompt
 import com.trirrin.xiaoshuo.model.SceneBreakdown
 import com.trirrin.xiaoshuo.model.SceneStatus
+import com.trirrin.xiaoshuo.model.StyleGuide
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -61,13 +68,14 @@ class NovelWorkspaceViewModel(
     private val novelRepository: NovelRepository,
     private val settingsRepository: GenerationSettingsRepository,
     private val pipelineFactory: (GenerationSettings) -> AgentPipeline,
+    private val generationCoordinator: GenerationCoordinator,
 ) : ViewModel() {
     private val json = Json { encodeDefaults = true; ignoreUnknownKeys = true }
-    private val workflow = MutableStateFlow(WorkflowState())
+    private val workflow = generationCoordinator.workflow
     private val selectedNovelId = MutableStateFlow<String?>(null)
     private val selectedChapterId = MutableStateFlow<String?>(null)
     private val selectedSceneId = MutableStateFlow<String?>(null)
-    private var activeGenerationJob: Job? = null
+    private var pendingOverwriteAction: (() -> Unit)? = null
 
     init {
         viewModelScope.launch {
@@ -184,6 +192,26 @@ class NovelWorkspaceViewModel(
             selectedChapterId.value = null
             selectedSceneId.value = null
             workflow.value = WorkflowState(events = listOf(timestamped("Created ${novel.title}")))
+        }
+    }
+
+    fun importFromChat(rawOutput: String) {
+        val cleanOutput = rawOutput.trim()
+        if (cleanOutput.isBlank()) {
+            setError("Paste the chat import JSON first")
+            return
+        }
+        val payload = ChatImportPrompt.parseOutput(cleanOutput).getOrElse { error ->
+            setError("Import JSON could not be parsed: ${error.message ?: "invalid structure"}")
+            return
+        }
+        if (payload.title.trim().isBlank() || payload.concept.trim().isBlank()) {
+            setError("Imported title and concept are required")
+            return
+        }
+
+        viewModelScope.launch {
+            importPayload(payload)
         }
     }
 
@@ -376,6 +404,15 @@ class NovelWorkspaceViewModel(
     }
 
     fun generateOutline() {
+        val novel = uiState.value.selectedNovel
+        if (novel?.outline != null) {
+            requestOverwriteConfirmation(OverwriteTarget.OUTLINE) { generateOutlineConfirmed() }
+            return
+        }
+        generateOutlineConfirmed()
+    }
+
+    private fun generateOutlineConfirmed() {
         runPipelineStep("Generating outline") { novel, settings ->
             require(settings.apiKey.isNotBlank()) { "API key is required before generation" }
             val pipeline = pipelineFactory(settings)
@@ -400,7 +437,14 @@ class NovelWorkspaceViewModel(
     }
 
     fun generateSelectedSynopsis() {
-        generateSelectedSynopsis(reviewFeedback = null, retryCount = null, busyMessage = "Generating chapter synopsis")
+        val chapter = uiState.value.selectedChapter
+        if (chapter?.synopsis != null) {
+            requestOverwriteConfirmation(OverwriteTarget.SYNOPSIS) {
+                generateSelectedSynopsisConfirmed(reviewFeedback = null, retryCount = null, busyMessage = "Generating chapter synopsis")
+            }
+            return
+        }
+        generateSelectedSynopsisConfirmed(reviewFeedback = null, retryCount = null, busyMessage = "Generating chapter synopsis")
     }
 
     fun retrySelectedSynopsis() {
@@ -413,11 +457,13 @@ class NovelWorkspaceViewModel(
             return
         }
         val nextReport = report.copy(status = ReviewStatus.NEEDS_RETRY, retryCount = report.retryCount + 1)
-        generateSelectedSynopsis(
-            reviewFeedback = nextReport.toFeedback(),
-            retryCount = nextReport.retryCount,
-            busyMessage = "Retrying chapter synopsis",
-        )
+        requestOverwriteConfirmation(OverwriteTarget.SYNOPSIS) {
+            generateSelectedSynopsisConfirmed(
+                reviewFeedback = nextReport.toFeedback(),
+                retryCount = nextReport.retryCount,
+                busyMessage = "Retrying chapter synopsis",
+            )
+        }
     }
 
     fun acceptSelectedSynopsisReview() {
@@ -458,7 +504,7 @@ class NovelWorkspaceViewModel(
         }
     }
 
-    private fun generateSelectedSynopsis(reviewFeedback: String?, retryCount: Int?, busyMessage: String) {
+    private fun generateSelectedSynopsisConfirmed(reviewFeedback: String?, retryCount: Int?, busyMessage: String) {
         runPipelineStep(busyMessage) { novel, settings ->
             require(settings.apiKey.isNotBlank()) { "API key is required before generation" }
             require(novel.outline != null) { "Generate an outline first" }
@@ -488,6 +534,13 @@ class NovelWorkspaceViewModel(
     }
 
     fun generateSelectedScene() {
+        val scene = uiState.value.selectedScene
+        if (scene?.text?.isNotBlank() == true) {
+            requestOverwriteConfirmation(OverwriteTarget.SCENE) {
+                streamSelectedScene(busyMessage = "Streaming scene")
+            }
+            return
+        }
         streamSelectedScene(busyMessage = "Streaming scene")
     }
 
@@ -500,13 +553,24 @@ class NovelWorkspaceViewModel(
     }
 
     fun cancelGeneration() {
-        val job = activeGenerationJob
-        if (job?.isActive != true) {
+        if (!generationCoordinator.cancel()) {
             appendEvent("No active generation to cancel")
             return
         }
         appendEvent("Cancellation requested")
-        job.cancel()
+    }
+
+    fun confirmOverwrite() {
+        val action = pendingOverwriteAction ?: return
+        pendingOverwriteAction = null
+        workflow.update { it.copy(overwriteConfirmation = null) }
+        action()
+    }
+
+    fun cancelOverwrite() {
+        pendingOverwriteAction = null
+        workflow.update { it.copy(overwriteConfirmation = null) }
+        appendEvent("Overwrite cancelled")
     }
 
     fun retrySelectedScene() {
@@ -519,11 +583,13 @@ class NovelWorkspaceViewModel(
             return
         }
         val nextReport = report.copy(status = ReviewStatus.NEEDS_RETRY, retryCount = report.retryCount + 1)
-        generateSelectedScene(
-            reviewFeedback = nextReport.toFeedback(),
-            retryCount = nextReport.retryCount,
-            busyMessage = "Retrying scene",
-        )
+        requestOverwriteConfirmation(OverwriteTarget.SCENE) {
+            generateSelectedSceneConfirmed(
+                reviewFeedback = nextReport.toFeedback(),
+                retryCount = nextReport.retryCount,
+                busyMessage = "Retrying scene",
+            )
+        }
     }
 
     fun acceptSelectedSceneReview() {
@@ -729,7 +795,7 @@ class NovelWorkspaceViewModel(
             ?.joinToString(" ")
     }
 
-    private fun generateSelectedScene(reviewFeedback: String?, retryCount: Int?, busyMessage: String) {
+    private fun generateSelectedSceneConfirmed(reviewFeedback: String?, retryCount: Int?, busyMessage: String) {
         runPipelineStep(busyMessage) { novel, settings ->
             require(settings.apiKey.isNotBlank()) { "API key is required before generation" }
             val chapters = novelRepository.getChapters(novel.id)
@@ -789,6 +855,67 @@ class NovelWorkspaceViewModel(
         }
     }
 
+    private suspend fun importPayload(payload: ChatImportPayload) {
+        val now = Clock.System.now()
+        val outline = payload.toImportedOutline()
+        val novel = Novel(
+            title = payload.title.trim(),
+            genre = payload.genre.toImportedGenre(),
+            concept = payload.concept.trim(),
+            themes = payload.themes.map { it.trim() }.filter { it.isNotBlank() },
+            styleGuide = payload.toImportedStyleGuide(),
+            outline = outline,
+            bible = payload.toImportedBible(),
+            status = if (outline == null) NovelStatus.DRAFTING_OUTLINE else NovelStatus.OUTLINE_COMPLETE,
+            createdAt = now,
+            updatedAt = now,
+        )
+        novelRepository.upsertNovel(novel)
+
+        val firstChapterId = payload.outline?.chapters
+            ?.sortedBy { it.index.coerceAtLeast(0) }
+            ?.mapNotNull { chapter -> importChapter(novel.id, chapter) }
+            ?.firstOrNull()
+        selectedNovelId.value = novel.id
+        selectedChapterId.value = firstChapterId
+        selectedSceneId.value = firstChapterId?.let { chapterId -> novelRepository.getScenes(chapterId).firstOrNull()?.id }
+        workflow.value = WorkflowState(events = listOf(timestamped("Imported ${novel.title} from chat")))
+    }
+
+    private suspend fun importChapter(novelId: String, chapter: com.trirrin.xiaoshuo.prompt.ImportedChapter): String? {
+        val chapterIndex = chapter.index.takeIf { it > 0 } ?: return null
+        val synopsis = chapter.synopsis?.toImportedSynopsis()
+        val savedChapter = Chapter(
+            novelId = novelId,
+            order = chapterIndex,
+            title = chapter.title.trim().ifBlank { "Chapter $chapterIndex" },
+            synopsis = synopsis,
+            status = if (synopsis == null) ChapterStatus.PENDING else ChapterStatus.SYNOPSIS_GENERATED,
+        )
+        novelRepository.upsertChapter(savedChapter)
+        chapter.synopsis?.scenes
+            ?.sortedBy { it.index.coerceAtLeast(0) }
+            ?.forEach { scene -> importScene(novelId, savedChapter.id, scene) }
+        return savedChapter.id
+    }
+
+    private suspend fun importScene(novelId: String, chapterId: String, scene: com.trirrin.xiaoshuo.prompt.ImportedScene) {
+        val sceneIndex = scene.index.takeIf { it > 0 } ?: return
+        val prose = scene.prose.trim()
+        novelRepository.upsertScene(
+            Scene(
+                novelId = novelId,
+                chapterId = chapterId,
+                order = sceneIndex,
+                synopsis = scene.synopsis.trim(),
+                text = prose,
+                status = if (prose.isBlank()) SceneStatus.PENDING else SceneStatus.GENERATED,
+                wordCount = countWords(prose),
+                textSource = if (prose.isBlank()) SceneTextSource.EMPTY else SceneTextSource.EDITED,
+            ),
+        )
+    }
+
     private suspend fun saveChapterShells(novelId: String, chapterBriefs: List<ChapterBrief>) {
         val existingByOrder = novelRepository.getChapters(novelId).associateBy { it.order }
         chapterBriefs.forEach { brief ->
@@ -831,11 +958,11 @@ class NovelWorkspaceViewModel(
             return
         }
         val settings = uiState.value.settings
-        if (activeGenerationJob?.isActive == true) {
+        if (generationCoordinator.isRunning) {
             setError("Generation already running")
             return
         }
-        val job = viewModelScope.launch {
+        generationCoordinator.launch {
             workflow.update {
                 it.copy(
                     isBusy = true,
@@ -861,10 +988,18 @@ class NovelWorkspaceViewModel(
                         streamingSceneText = null,
                     )
                 }
-                activeGenerationJob = null
             }
         }
-        activeGenerationJob = job
+    }
+
+    private fun requestOverwriteConfirmation(target: OverwriteTarget, action: () -> Unit) {
+        if (generationCoordinator.isRunning) {
+            setError("Generation already running")
+            return
+        }
+        pendingOverwriteAction = action
+        workflow.update { it.copy(error = null, overwriteConfirmation = OverwriteConfirmation(target)) }
+        appendEvent("Overwrite confirmation required")
     }
 
     private suspend fun recordPipelineEvent(novelId: String, settings: GenerationSettings, event: PipelineEvent) {
@@ -987,6 +1122,7 @@ class NovelWorkspaceViewModel(
                 novelRepository = container.novelRepository,
                 settingsRepository = container.settingsRepository,
                 pipelineFactory = container::createPipeline,
+                generationCoordinator = container.generationCoordinator,
             ) as T
         }
     }
@@ -1029,6 +1165,182 @@ fun ChapterSynopsis.toDraft(): ChapterSynopsisDraft {
         },
         chapterEnding = chapterEnding,
         transitionNotes = transitionNotes,
+    )
+}
+
+private fun String.toImportedGenre(): Genre {
+    val normalized = trim().lowercase().replace(Regex("[^a-z0-9]+"), "_").trim('_')
+    return when (normalized) {
+        "fantasy" -> Genre.FANTASY
+        "sci_fi", "science_fiction", "sciencefiction", "sf" -> Genre.SCI_FI
+        "romance" -> Genre.ROMANCE
+        "mystery" -> Genre.MYSTERY
+        "thriller" -> Genre.THRILLER
+        "literary", "literary_fiction" -> Genre.LITERARY
+        "historical", "historical_fiction" -> Genre.HISTORICAL
+        "horror" -> Genre.HORROR
+        else -> Genre.OTHER
+    }
+}
+
+private fun ChatImportPayload.toImportedStyleGuide(): StyleGuide {
+    return StyleGuide(
+        narrativeVoice = parseNarrativeVoice(styleGuide.narrativeVoice),
+        tense = parseNarrativeTense(styleGuide.tense),
+        proseStyle = parseProseStyle(styleGuide.proseStyle),
+        additionalNotes = listOf(styleGuide.narrativeVoice, styleGuide.tense, styleGuide.proseStyle)
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .joinToString("; "),
+    )
+}
+
+private fun parseNarrativeVoice(value: String): NarrativeVoice {
+    val normalized = value.trim().lowercase()
+    return when {
+        "first" in normalized -> NarrativeVoice.FIRST_PERSON
+        "omniscient" in normalized -> NarrativeVoice.THIRD_PERSON_OMNISCIENT
+        "second" in normalized -> NarrativeVoice.SECOND_PERSON
+        else -> NarrativeVoice.THIRD_PERSON_LIMITED
+    }
+}
+
+private fun parseNarrativeTense(value: String): NarrativeTense {
+    return if ("present" in value.trim().lowercase()) NarrativeTense.PRESENT else NarrativeTense.PAST
+}
+
+private fun parseProseStyle(value: String): ProseStyle {
+    val normalized = value.trim().lowercase()
+    return when {
+        "minimal" in normalized || "lean" in normalized || "spare" in normalized -> ProseStyle.MINIMALIST
+        "purple" in normalized || "lush" in normalized || "ornate" in normalized -> ProseStyle.PURPLE
+        "conversation" in normalized || "casual" in normalized -> ProseStyle.CONVERSATIONAL
+        else -> ProseStyle.LITERARY
+    }
+}
+
+private fun ChatImportPayload.toImportedOutline(): NovelOutline? {
+    val importedOutline = outline ?: return null
+    val chapters = importedOutline.chapters
+        .mapNotNull { chapter -> chapter.toBrief() }
+        .sortedBy { it.chapterIndex }
+    if (importedOutline.premise.isBlank() && chapters.isEmpty()) return null
+    return NovelOutline(
+        premise = importedOutline.premise.trim().ifBlank { concept.trim() },
+        majorPlotPoints = importedOutline.majorPlotPoints.mapNotNull { point -> point.toPlotPoint() },
+        characterArcs = importedOutline.characterArcs.map { it.trim() }.filter { it.isNotBlank() },
+        thematicStructure = importedOutline.thematicStructure.trim(),
+        chapterCount = chapters.size,
+        chapterBriefs = chapters,
+    )
+}
+
+private fun com.trirrin.xiaoshuo.prompt.ImportedChapter.toBrief(): ChapterBrief? {
+    val chapterIndex = index.takeIf { it > 0 } ?: return null
+    return ChapterBrief(
+        chapterIndex = chapterIndex,
+        title = title.trim().ifBlank { "Chapter $chapterIndex" },
+        plotBeats = plotBeats.trim().ifBlank { synopsis?.chapterGoal?.trim().orEmpty() },
+        purposeInStory = purposeInStory.trim(),
+    )
+}
+
+private fun com.trirrin.xiaoshuo.prompt.ImportedPlotPoint.toPlotPoint(): PlotPoint? {
+    if (name.isBlank() && description.isBlank()) return null
+    return PlotPoint(
+        name = name.trim().ifBlank { "Plot Point" },
+        description = description.trim(),
+        position = position.coerceIn(0f, 1f),
+    )
+}
+
+private fun com.trirrin.xiaoshuo.prompt.ImportedChapterSynopsis.toImportedSynopsis(): ChapterSynopsis? {
+    val breakdowns = scenes.mapNotNull { scene -> scene.toBreakdown() }.sortedBy { it.sceneIndex }
+    if (chapterGoal.isBlank() && breakdowns.isEmpty()) return null
+    return ChapterSynopsis(
+        chapterGoal = chapterGoal.trim(),
+        sceneBreakdowns = breakdowns,
+        chapterEnding = chapterEnding.trim(),
+        transitionNotes = transitionNotes.trim(),
+    )
+}
+
+private fun com.trirrin.xiaoshuo.prompt.ImportedScene.toBreakdown(): SceneBreakdown? {
+    val sceneIndex = index.takeIf { it > 0 } ?: return null
+    return SceneBreakdown(
+        sceneIndex = sceneIndex,
+        synopsis = synopsis.trim(),
+        targetWordCount = targetWordCount.takeIf { it > 0 } ?: 2500,
+    )
+}
+
+private fun ChatImportPayload.toImportedBible(): NovelBible {
+    return NovelBible(
+        characters = bible.characters.mapNotNull { character -> character.toCharacterEntry() },
+        locations = bible.locations.mapNotNull { location -> location.toLocationEntry() },
+        timelineEvents = bible.timelineEvents.mapNotNull { event -> event.toTimelineEvent() },
+        worldRules = bible.worldRules.mapNotNull { rule -> rule.toWorldRule() },
+        themes = bible.themes.mapNotNull { theme -> theme.toThemeEntry() },
+    )
+}
+
+private fun com.trirrin.xiaoshuo.prompt.ImportedCharacter.toCharacterEntry(): CharacterEntry? {
+    if (name.isBlank()) return null
+    return CharacterEntry(
+        name = name.trim(),
+        aliases = aliases.map { it.trim() }.filter { it.isNotBlank() },
+        description = description.trim(),
+        personality = personality.trim(),
+        relationships = relationships.mapNotNull { relationship -> relationship.toRelationship() },
+        currentState = currentState.trim(),
+        source = BibleEntrySource.USER,
+    )
+}
+
+private fun com.trirrin.xiaoshuo.prompt.ImportedRelationship.toRelationship(): Relationship? {
+    if (targetCharacterName.isBlank() || relationType.isBlank()) return null
+    return Relationship(
+        targetCharacterName = targetCharacterName.trim(),
+        relationType = relationType.trim(),
+    )
+}
+
+private fun com.trirrin.xiaoshuo.prompt.ImportedLocation.toLocationEntry(): LocationEntry? {
+    if (name.isBlank()) return null
+    return LocationEntry(
+        name = name.trim(),
+        description = description.trim(),
+        significance = significance.trim(),
+        source = BibleEntrySource.USER,
+    )
+}
+
+private fun com.trirrin.xiaoshuo.prompt.ImportedTimelineEvent.toTimelineEvent(): TimelineEvent? {
+    if (description.isBlank()) return null
+    return TimelineEvent(
+        description = description.trim(),
+        chronologicalOrder = chronologicalOrder,
+        source = BibleEntrySource.USER,
+    )
+}
+
+private fun com.trirrin.xiaoshuo.prompt.ImportedWorldRule.toWorldRule(): WorldRule? {
+    if (category.isBlank() || rule.isBlank()) return null
+    return WorldRule(
+        category = category.trim(),
+        rule = rule.trim(),
+        details = details.trim(),
+        source = BibleEntrySource.USER,
+    )
+}
+
+private fun com.trirrin.xiaoshuo.prompt.ImportedTheme.toThemeEntry(): ThemeEntry? {
+    if (name.isBlank()) return null
+    return ThemeEntry(
+        name = name.trim(),
+        description = description.trim(),
+        motifSymbols = motifSymbols.map { it.trim() }.filter { it.isNotBlank() },
+        source = BibleEntrySource.USER,
     )
 }
 
@@ -1419,4 +1731,40 @@ data class WorkflowState(
     val streamingSceneText: String? = null,
     val queuePosition: Int = 0,
     val queueTotal: Int = 0,
+    val overwriteConfirmation: OverwriteConfirmation? = null,
 )
+
+data class OverwriteConfirmation(
+    val target: OverwriteTarget,
+)
+
+enum class OverwriteTarget {
+    OUTLINE,
+    SYNOPSIS,
+    SCENE,
+}
+
+class GenerationCoordinator(private val scope: CoroutineScope) {
+    val workflow = MutableStateFlow(WorkflowState())
+    private var activeJob: kotlinx.coroutines.Job? = null
+
+    val isRunning: Boolean
+        get() = activeJob?.isActive == true
+
+    fun launch(block: suspend () -> Unit) {
+        check(activeJob?.isActive != true) { "Generation already running" }
+        activeJob = scope.launch {
+            try {
+                block()
+            } finally {
+                activeJob = null
+            }
+        }
+    }
+
+    fun cancel(): Boolean {
+        val job = activeJob?.takeIf { it.isActive } ?: return false
+        job.cancel()
+        return true
+    }
+}

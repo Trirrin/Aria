@@ -15,6 +15,7 @@
 
     <string name="section_novels">小说</string>
     <string name="section_new_novel">新建小说</string>
+    <string name="section_import_from_chat">从聊天导入</string>
     <string name="section_project">项目</string>
     <string name="section_outline">大纲</string>
     <string name="section_chapters">章节</string>
@@ -32,7 +33,11 @@
     <string name="section_provider_settings">服务商设置</string>
     <string name="section_review">审阅</string>
     <string name="section_issues">问题</string>
-    <string name="section_suggested_fixes">建议修复</string>
+    <string name="section_suggested_fixes">修改建议</string>
+    <string name="dialog_overwrite_title">确认重新生成</string>
+    <string name="dialog_overwrite_outline_message">重新生成大纲会替换已保存的大纲，并可能改变章节框架。系统会保留修订快照。</string>
+    <string name="dialog_overwrite_synopsis_message">重新生成本章梗概会替换已保存的章节梗概和场景拆分。已有场景正文会被保留。</string>
+    <string name="dialog_overwrite_scene_message">重新生成本场景会替换已保存的正文。系统会保留修订快照。</string>
 
     <string name="empty_no_novels">还没有小说。</string>
     <string name="empty_select_novel_first">请先创建或选择一部小说。</string>
@@ -41,7 +46,7 @@
     <string name="empty_no_scene_breakdowns">还没有场景拆分。</string>
     <string name="empty_no_chapter_synopsis">还没有章节梗概。</string>
     <string name="empty_select_scene">请选择一个场景。</string>
-    <string name="empty_no_matching_bible">当前章节或场景没有匹配的设定集条目。</string>
+    <string name="empty_no_matching_bible">当前章节或场景没有匹配的设定条目。</string>
     <string name="empty_no_snapshots">还没有快照。</string>
     <string name="empty_no_token_usage">还没有记录 Token 用量。</string>
 
@@ -68,6 +73,9 @@
     <string name="action_keep_canon">保留原设定</string>
     <string name="action_use_incoming">采用新内容</string>
     <string name="action_cancel">取消</string>
+    <string name="action_continue">继续</string>
+    <string name="action_copy_import_prompt">复制导入提示词</string>
+    <string name="action_import_from_chat">从聊天导入</string>
 
     <string name="share_markdown">分享 Markdown</string>
     <string name="share_txt">分享 TXT</string>
@@ -93,7 +101,7 @@
     <string name="metric_retries">重试</string>
 
     <string name="field_title">标题</string>
-    <string name="field_concept">概念</string>
+    <string name="field_concept">构思</string>
     <string name="field_genre">类型</string>
     <string name="field_themes_csv">主题，逗号分隔</string>
     <string name="field_premise">故事前提</string>
@@ -112,7 +120,7 @@
     <string name="field_synopsis_model">梗概模型</string>
     <string name="field_text_model">正文模型</string>
     <string name="field_review_model">审阅模型</string>
-    <string name="field_continuity_model">连续性模型</string>
+    <string name="field_continuity_model">连贯性模型</string>
     <string name="field_provider">服务商</string>
     <string name="field_name">名称</string>
     <string name="field_event_description">事件描述</string>
@@ -128,10 +136,12 @@
     <string name="field_current_state">当前状态</string>
     <string name="field_chronological_order">时间顺序</string>
     <string name="field_extra">补充信息</string>
+    <string name="field_chat_import_prompt">发给旧 AI 的提示词</string>
+    <string name="field_chat_import_json">在这里粘贴 JSON 总结</string>
 
     <string name="genre_fantasy">奇幻</string>
     <string name="genre_sci_fi">科幻</string>
-    <string name="genre_romance">爱情</string>
+    <string name="genre_romance">言情</string>
     <string name="genre_mystery">悬疑</string>
     <string name="genre_thriller">惊悚</string>
     <string name="genre_literary">文学小说</string>
