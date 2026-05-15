@@ -43,7 +43,7 @@ class ContinuityAgent(
         }
 
         return prompt.parseOutput(response.content).fold(
-            onSuccess = { AgentResult.ContinuityResult(it) },
+            onSuccess = { AgentResult.ContinuityResult(it, response.toAgentUsage(name, model)) },
             onFailure = {
                 AgentResult.Error("Failed to parse continuity output: ${it.message}", it)
             },

@@ -82,11 +82,12 @@ Settings are stored with DataStore. API keys are currently local settings data; 
 - Bible filtering and Bible merging.
 - Room persistence for novels, chapters, and scenes.
 - DataStore generation settings.
-- Compose MVP workspace with five tabs:
+- Compose MVP workspace with six tabs:
   - Library: create and select novels.
   - Outline: generate, edit, and save outline.
   - Draft: select chapters/scenes, generate and edit chapter synopsis, generate and edit scene prose.
-  - Bible: view extracted story facts.
+  - Bible: view, edit, and resolve extracted story facts.
+  - History: restore revision snapshots and inspect token/cost usage.
   - Settings: configure provider, API key, base URL, and per-agent models.
 - Human editing loop:
   - Editable outline with persistence.
@@ -99,25 +100,33 @@ Settings are stored with DataStore. API keys are currently local settings data; 
   - User can accept, retry with feedback, mark for manual edit, or mark approved.
   - Retry attempts are capped in the ViewModel.
   - Failed scene reviews do not update the Novel Bible.
+- Bible editor and continuity control:
+  - User-editable characters, locations, timeline, world rules, and themes.
+  - Bible entry create/update/delete operations.
+  - Source chapter/scene tracking for extracted entries.
+  - User-authored canon is preserved during continuity merges.
+  - Canon conflicts can be kept or replaced from the Bible tab.
+  - Agent context preview uses `BibleFilter`.
+- Export, revision history, and metrics:
+  - Markdown, TXT, and EPUB manuscript export through Android share intents.
+  - Revision snapshots for outline, chapter synopsis, scene prose, and Bible changes.
+  - Restore/delete snapshot controls.
+  - Token usage and estimated cost tracking by provider/model/agent.
+  - Generated vs edited scene provenance in stats.
 - `./gradlew build` passes.
 
 ### Partially Implemented
 
 - Scene continuity: previous scene ending is passed for selected scene generation, but broader chapter/novel continuity UX is thin.
-- Bible workflow: facts can be extracted and viewed, but manual editing/conflict resolution is missing.
+- Bible workflow: facts can be extracted, edited, previewed, and conflict-resolved; repository/UI tests are still missing.
 - Streaming: core pipeline exposes `streamScene`, but the Compose UI currently saves only completed scene text.
 - Error handling: errors are shown in the run log, but generation retry/resume behavior is not complete.
 - Mobile UI: the workspace is functional, but still more tablet/workbench than polished phone UI.
 
 ### Not Yet Implemented
 
-- Bible editor for characters, locations, timeline, world rules, and themes.
-- Bible conflict warnings and user resolution.
 - Generation queue for chapter/scene batches.
 - Real streaming prose UI.
-- Token usage tracking and cost estimates.
-- Export to Markdown/TXT/EPUB.
-- Revision history / snapshots.
 - Background generation and interruption recovery.
 - App UI tests and ViewModel tests.
 - Real-provider smoke test tooling.
@@ -210,25 +219,29 @@ Acceptance criteria:
 - User can decide whether to accept, edit, or regenerate.
 - Retry uses review feedback as context.
 
-### Phase 6: Bible Editor And Continuity Control
+### Phase 6: Bible Editor And Continuity Control - Done
 
 Goal: make the Novel Bible trustworthy and user-correctable.
 
-Tasks:
+Done:
 
 1. Add Bible editor tabs for characters, locations, timeline, world rules, and themes.
 2. Add create/update/delete operations for Bible entries.
-3. Track source chapter/scene for extracted facts.
-4. Detect likely conflicts during Bible merge.
-5. Add a conflict resolution UI.
-6. Add relevance preview for what Bible entries will be sent to an agent.
+3. Track source chapter/scene for extracted facts in Bible entries.
+4. Preserve user-authored Bible entries during extracted continuity merge.
+5. Detect likely conflicts during Bible merge.
+6. Add conflict resolution controls for keeping canon or using incoming extracted facts.
+7. Add relevance preview using `BibleFilter` for the selected chapter/scene context.
+
+Remaining cleanup:
+
+- Add tests for Bible CRUD, user-canon preservation, and conflict warnings.
 
 Acceptance criteria:
 
 - User can correct wrong extracted facts.
 - Newer prose facts do not blindly erase important user-authored canon.
 - Agent context can be inspected before generation.
-
 ### Phase 7: Streaming And Generation Queue
 
 Goal: make long generation feel responsive and recoverable.
@@ -248,25 +261,27 @@ Acceptance criteria:
 - User can cancel without corrupting saved state.
 - App restart does not leave scenes permanently stuck as `GENERATING`.
 
-### Phase 8: Export, Revision History, And Metrics
+### Phase 8: Export, Revision History, And Metrics - Done
 
 Goal: make the app useful after drafting.
 
-Tasks:
+Done:
 
-1. Export manuscript to Markdown and TXT.
-2. Add EPUB export if scope allows.
-3. Add revision snapshots for outline, synopsis, scenes, and Bible.
-4. Track token usage by provider/model/agent.
-5. Add cost estimates.
-6. Add project stats: word count, chapter progress, generated vs edited scenes.
+1. Export manuscript text to Markdown and TXT through Android share intents.
+2. Export EPUB through Android share intents using a minimal EPUB package.
+3. Add pure manuscript export helpers.
+4. Add revision snapshots for outline, synopsis, scenes, and Bible.
+5. Add restore/delete controls for snapshots.
+6. Track token usage by provider/model/agent.
+7. Add cost estimates.
+8. Track generated vs edited scenes with reliable edit provenance.
+9. Add project stats for total words, scene progress, approvals, chapter count, scene count, Bible entry count, edited scenes, and cost.
 
 Acceptance criteria:
 
-- A complete novel can leave the app in a usable format.
+- A complete novel can leave the app in usable Markdown, TXT, or EPUB format.
 - User can recover earlier versions.
 - User can understand generation cost.
-
 ### Phase 9: Tests And Hardening
 
 Goal: stop accidental breakage.
@@ -292,9 +307,9 @@ Acceptance criteria:
 | --- | --- | --- |
 | Invalid JSON from LLM | strict parse, code-fence fallback, then error/retry | partially implemented in prompts; retry workflow incomplete |
 | Context overflow | BibleFilter enforces token budget and previous scene ending is capped | partially implemented |
-| Review score too low | expose issues and allow retry/edit/accept | incomplete |
-| Bible conflict | preserve user canon, flag conflict, let user resolve | incomplete |
-| Large Bible | relevance scoring and token budget | partially implemented |
+| Review score too low | expose issues and allow retry/edit/accept | implemented |
+| Bible conflict | preserve user canon, flag conflict, let user resolve | implemented |
+| Large Bible | relevance scoring and token budget | implemented |
 | Interrupted generation | recover scene status on restart | incomplete |
 | Regeneration | do not destroy user edits without explicit confirmation | incomplete |
 | Missing API key | block generation with clear error | implemented |

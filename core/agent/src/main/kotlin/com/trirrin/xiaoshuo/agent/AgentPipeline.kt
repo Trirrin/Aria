@@ -20,6 +20,7 @@ sealed class PipelineEvent {
     data class SceneTextComplete(val text: String, val wordCount: Int) : PipelineEvent()
     data class ReviewComplete(val result: AgentResult.ReviewResult) : PipelineEvent()
     data class BibleUpdated(val bible: NovelBible) : PipelineEvent()
+    data class UsageRecorded(val usage: AgentUsage) : PipelineEvent()
     data class Error(val message: String, val cause: Throwable? = null) : PipelineEvent()
     data class Step(val agentName: String, val description: String) : PipelineEvent()
 }
@@ -31,6 +32,12 @@ data class PipelineConfig(
     val reviewModel: String,
     val continuityModel: String,
     val maxReviewRetries: Int = 2,
+)
+
+data class ChapterSynopsisPipelineResult(
+    val synopsis: ChapterSynopsis?,
+    val review: AgentResult.ReviewResult?,
+    val events: List<PipelineEvent> = emptyList(),
 )
 
 class AgentPipeline(
@@ -59,6 +66,7 @@ class AgentPipeline(
         val result = outlineAgent.generate(input)
         when (result) {
             is AgentResult.OutlineResult -> {
+                result.usage?.let { events.add(PipelineEvent.UsageRecorded(it)) }
                 events.add(PipelineEvent.OutlineGenerated(result.outline))
                 return result.outline to events
             }
@@ -79,7 +87,8 @@ class AgentPipeline(
         chapters: List<Chapter>,
         previousChapterEnding: String? = null,
         reviewFeedback: String? = null,
-    ): Pair<ChapterSynopsis?, AgentResult.ReviewResult?> {
+    ): ChapterSynopsisPipelineResult {
+        val events = mutableListOf<PipelineEvent>()
         val synopsisResult = if (reviewFeedback.isNullOrBlank()) {
             chapterSynopsisAgent.generate(
                 novel = novel,
@@ -92,14 +101,18 @@ class AgentPipeline(
         }
 
         val synopsis = when (synopsisResult) {
-            is AgentResult.SynopsisResult -> synopsisResult.synopsis
-            is AgentResult.Error -> return null to null
-            else -> return null to null
+            is AgentResult.SynopsisResult -> {
+                synopsisResult.usage?.let { events.add(PipelineEvent.UsageRecorded(it)) }
+                events.add(PipelineEvent.SynopsisGenerated(synopsisResult.synopsis))
+                synopsisResult.synopsis
+            }
+            is AgentResult.Error -> return ChapterSynopsisPipelineResult(null, null, events)
+            else -> return ChapterSynopsisPipelineResult(null, null, events)
         }
 
-        val outline = novel.outline ?: return synopsis to null
+        val outline = novel.outline ?: return ChapterSynopsisPipelineResult(synopsis, null, events)
         val brief = outline.chapterBriefs.find { it.chapterIndex == chapter.order }
-            ?: return synopsis to null
+            ?: return ChapterSynopsisPipelineResult(synopsis, null, events)
 
         val reviewResult = reviewAgent.review(
             parentDirective = "Chapter ${chapter.order}: ${brief.title}\nPlot beats: ${brief.plotBeats}\nPurpose: ${brief.purposeInStory}",
@@ -108,8 +121,11 @@ class AgentPipeline(
         )
 
         return when (reviewResult) {
-            is AgentResult.ReviewResult -> synopsis to reviewResult
-            else -> synopsis to null
+            is AgentResult.ReviewResult -> {
+                reviewResult.usage?.let { events.add(PipelineEvent.UsageRecorded(it)) }
+                ChapterSynopsisPipelineResult(synopsis, reviewResult, events)
+            }
+            else -> ChapterSynopsisPipelineResult(synopsis, null, events)
         }
     }
 
@@ -136,6 +152,7 @@ class AgentPipeline(
         val text = when (result) {
             is AgentResult.SceneTextResult -> {
                 emit(PipelineEvent.SceneTextComplete(result.text, result.wordCount))
+                result.usage?.let { emit(PipelineEvent.UsageRecorded(it)) }
                 result.text
             }
             is AgentResult.Error -> {
@@ -160,6 +177,7 @@ class AgentPipeline(
         when (reviewResult) {
             is AgentResult.ReviewResult -> {
                 emit(PipelineEvent.ReviewComplete(reviewResult))
+                reviewResult.usage?.let { emit(PipelineEvent.UsageRecorded(it)) }
                 if (!reviewResult.passed) return@flow
             }
             else -> return@flow
@@ -177,6 +195,7 @@ class AgentPipeline(
                 val updatedBible = bibleMerger.merge(
                     novel.bible, continuityResult.bibleDiff, chapter.id, scene.id
                 )
+                continuityResult.usage?.let { emit(PipelineEvent.UsageRecorded(it)) }
                 emit(PipelineEvent.BibleUpdated(updatedBible))
             }
             is AgentResult.Error -> {
@@ -224,7 +243,7 @@ class AgentPipeline(
         return try {
             val response = chapterSynopsisAgent.llmClient.complete(request)
             prompt.parseOutput(response.content).fold(
-                onSuccess = { AgentResult.SynopsisResult(it) },
+                onSuccess = { AgentResult.SynopsisResult(it, response.toAgentUsage(chapterSynopsisAgent.name, chapterSynopsisAgent.model)) },
                 onFailure = { AgentResult.Error("Failed to parse retried synopsis: ${it.message}", it) },
             )
         } catch (e: Exception) {
@@ -274,6 +293,7 @@ class AgentPipeline(
                     AgentResult.SceneTextResult(
                         text = it,
                         wordCount = it.split(Regex("\\s+")).count { word -> word.isNotBlank() },
+                        usage = response.toAgentUsage(sceneExpansionAgent.name, sceneExpansionAgent.model),
                     )
                 },
                 onFailure = { AgentResult.Error("Failed to process retried scene text: ${it.message}", it) },

@@ -15,6 +15,7 @@ data class Scene(
     val reviewReport: ReviewReport? = null,
     val status: SceneStatus = SceneStatus.PENDING,
     val wordCount: Int = 0,
+    val textSource: SceneTextSource = SceneTextSource.EMPTY,
 )
 
 enum class SceneStatus {
@@ -23,4 +24,10 @@ enum class SceneStatus {
     GENERATED,
     REVIEWED,
     APPROVED,
+}
+
+enum class SceneTextSource {
+    EMPTY,
+    GENERATED,
+    EDITED,
 }

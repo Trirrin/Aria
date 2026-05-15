@@ -59,6 +59,7 @@ class SceneExpansionAgent(
                     AgentResult.SceneTextResult(
                         text = it,
                         wordCount = it.split(Regex("\\s+")).count { word -> word.isNotBlank() },
+                        usage = response.toAgentUsage(name, model),
                     )
                 },
                 onFailure = {

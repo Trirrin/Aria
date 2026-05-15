@@ -50,6 +50,7 @@ class ReviewAgent(
                     issues = it.issues,
                     suggestedFixes = it.suggestedFixes,
                     passed = it.passed,
+                    usage = response.toAgentUsage(name, model),
                 )
             },
             onFailure = {

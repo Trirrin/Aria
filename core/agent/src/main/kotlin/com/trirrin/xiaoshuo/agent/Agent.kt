@@ -1,5 +1,6 @@
 package com.trirrin.xiaoshuo.agent
 
+import com.trirrin.xiaoshuo.llm.LlmResponse
 import com.trirrin.xiaoshuo.model.*
 import com.trirrin.xiaoshuo.prompt.BibleDiff
 
@@ -18,16 +19,33 @@ data class AgentContext(
     val userEdits: String? = null,
 )
 
+data class AgentUsage(
+    val agentName: String,
+    val model: String,
+    val inputTokens: Int,
+    val outputTokens: Int,
+)
+
+internal fun LlmResponse.toAgentUsage(agentName: String, fallbackModel: String): AgentUsage {
+    return AgentUsage(
+        agentName = agentName,
+        model = model.ifBlank { fallbackModel },
+        inputTokens = inputTokens,
+        outputTokens = outputTokens,
+    )
+}
+
 sealed class AgentResult {
-    data class OutlineResult(val outline: NovelOutline) : AgentResult()
-    data class SynopsisResult(val synopsis: ChapterSynopsis) : AgentResult()
-    data class SceneTextResult(val text: String, val wordCount: Int) : AgentResult()
+    data class OutlineResult(val outline: NovelOutline, val usage: AgentUsage? = null) : AgentResult()
+    data class SynopsisResult(val synopsis: ChapterSynopsis, val usage: AgentUsage? = null) : AgentResult()
+    data class SceneTextResult(val text: String, val wordCount: Int, val usage: AgentUsage? = null) : AgentResult()
     data class ReviewResult(
         val score: Int,
         val issues: List<String>,
         val suggestedFixes: List<String>,
         val passed: Boolean,
+        val usage: AgentUsage? = null,
     ) : AgentResult()
-    data class ContinuityResult(val bibleDiff: BibleDiff) : AgentResult()
+    data class ContinuityResult(val bibleDiff: BibleDiff, val usage: AgentUsage? = null) : AgentResult()
     data class Error(val message: String, val cause: Throwable? = null) : AgentResult()
 }

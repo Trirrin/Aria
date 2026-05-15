@@ -72,4 +72,51 @@ data class SceneEntity(
     val reviewReportJson: String?,
     val status: String,
     val wordCount: Int,
+    val textSource: String,
+)
+
+@Entity(
+    tableName = "revision_snapshots",
+    foreignKeys = [
+        ForeignKey(
+            entity = NovelEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["novelId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index("novelId"), Index("targetId")],
+)
+data class RevisionSnapshotEntity(
+    @PrimaryKey val id: String,
+    val novelId: String,
+    val targetType: String,
+    val targetId: String,
+    val label: String,
+    val contentJson: String,
+    val createdAtEpochMillis: Long,
+)
+
+@Entity(
+    tableName = "token_usage_records",
+    foreignKeys = [
+        ForeignKey(
+            entity = NovelEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["novelId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index("novelId"), Index("agentName"), Index("model")],
+)
+data class TokenUsageRecordEntity(
+    @PrimaryKey val id: String,
+    val novelId: String,
+    val agentName: String,
+    val provider: String,
+    val model: String,
+    val inputTokens: Int,
+    val outputTokens: Int,
+    val estimatedCostUsd: Double,
+    val createdAtEpochMillis: Long,
 )

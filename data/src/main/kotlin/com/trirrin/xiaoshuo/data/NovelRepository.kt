@@ -11,12 +11,15 @@ import com.trirrin.xiaoshuo.model.NovelStatus
 import com.trirrin.xiaoshuo.model.ReviewReport
 import com.trirrin.xiaoshuo.model.Scene
 import com.trirrin.xiaoshuo.model.SceneStatus
+import com.trirrin.xiaoshuo.model.SceneTextSource
 import com.trirrin.xiaoshuo.model.StyleGuide
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.util.UUID
 
 class NovelRepository(
     private val dao: NovelDao,
@@ -58,8 +61,50 @@ class NovelRepository(
         return dao.getScenes(chapterId).map { it.toModel(json) }
     }
 
+    fun observeScenesForNovel(novelId: String): Flow<List<Scene>> {
+        return dao.observeScenesForNovel(novelId).map { scenes -> scenes.map { it.toModel(json) } }
+    }
+
+    suspend fun getScenesForNovel(novelId: String): List<Scene> {
+        return dao.getScenesForNovel(novelId).map { it.toModel(json) }
+    }
+
     suspend fun upsertScene(scene: Scene) {
         dao.upsertScene(scene.toEntity(json))
+    }
+
+    fun observeRevisionSnapshots(novelId: String): Flow<List<RevisionSnapshot>> {
+        return dao.observeRevisionSnapshots(novelId).map { snapshots -> snapshots.map { it.toModel() } }
+    }
+
+    suspend fun getRevisionSnapshot(id: String): RevisionSnapshot? {
+        return dao.getRevisionSnapshot(id)?.toModel()
+    }
+
+    suspend fun saveRevisionSnapshot(novelId: String, targetType: String, targetId: String, label: String, contentJson: String) {
+        dao.upsertRevisionSnapshot(
+            RevisionSnapshotEntity(
+                id = UUID.randomUUID().toString(),
+                novelId = novelId,
+                targetType = targetType,
+                targetId = targetId,
+                label = label,
+                contentJson = contentJson,
+                createdAtEpochMillis = Clock.System.now().toEpochMilliseconds(),
+            ),
+        )
+    }
+
+    suspend fun deleteRevisionSnapshot(id: String) {
+        dao.deleteRevisionSnapshot(id)
+    }
+
+    fun observeTokenUsage(novelId: String): Flow<List<TokenUsageRecord>> {
+        return dao.observeTokenUsage(novelId).map { records -> records.map { it.toModel() } }
+    }
+
+    suspend fun saveTokenUsage(record: TokenUsageRecord) {
+        dao.upsertTokenUsage(record.toEntity())
     }
 }
 
@@ -133,6 +178,7 @@ private fun Scene.toEntity(json: Json): SceneEntity {
         reviewReportJson = reviewReport?.let { json.encodeToString(it) },
         status = status.name,
         wordCount = wordCount,
+        textSource = textSource.name,
     )
 }
 
@@ -148,5 +194,68 @@ private fun SceneEntity.toModel(json: Json): Scene {
         reviewReport = reviewReportJson?.let { json.decodeFromString<ReviewReport>(it) },
         status = enumValueOf<SceneStatus>(status),
         wordCount = wordCount,
+        textSource = enumValueOf<SceneTextSource>(textSource),
+    )
+}
+
+data class RevisionSnapshot(
+    val id: String,
+    val novelId: String,
+    val targetType: String,
+    val targetId: String,
+    val label: String,
+    val contentJson: String,
+    val createdAt: Instant,
+)
+
+data class TokenUsageRecord(
+    val id: String = UUID.randomUUID().toString(),
+    val novelId: String,
+    val agentName: String,
+    val provider: String,
+    val model: String,
+    val inputTokens: Int,
+    val outputTokens: Int,
+    val estimatedCostUsd: Double,
+    val createdAt: Instant = Clock.System.now(),
+)
+
+private fun RevisionSnapshotEntity.toModel(): RevisionSnapshot {
+    return RevisionSnapshot(
+        id = id,
+        novelId = novelId,
+        targetType = targetType,
+        targetId = targetId,
+        label = label,
+        contentJson = contentJson,
+        createdAt = Instant.fromEpochMilliseconds(createdAtEpochMillis),
+    )
+}
+
+private fun TokenUsageRecordEntity.toModel(): TokenUsageRecord {
+    return TokenUsageRecord(
+        id = id,
+        novelId = novelId,
+        agentName = agentName,
+        provider = provider,
+        model = model,
+        inputTokens = inputTokens,
+        outputTokens = outputTokens,
+        estimatedCostUsd = estimatedCostUsd,
+        createdAt = Instant.fromEpochMilliseconds(createdAtEpochMillis),
+    )
+}
+
+private fun TokenUsageRecord.toEntity(): TokenUsageRecordEntity {
+    return TokenUsageRecordEntity(
+        id = id,
+        novelId = novelId,
+        agentName = agentName,
+        provider = provider,
+        model = model,
+        inputTokens = inputTokens,
+        outputTokens = outputTokens,
+        estimatedCostUsd = estimatedCostUsd,
+        createdAtEpochMillis = createdAt.toEpochMilliseconds(),
     )
 }

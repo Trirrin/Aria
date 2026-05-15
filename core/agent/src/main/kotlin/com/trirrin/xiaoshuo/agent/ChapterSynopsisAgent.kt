@@ -65,7 +65,7 @@ class ChapterSynopsisAgent(
         }
 
         return prompt.parseOutput(response.content).fold(
-            onSuccess = { AgentResult.SynopsisResult(it) },
+            onSuccess = { AgentResult.SynopsisResult(it, response.toAgentUsage(name, model)) },
             onFailure = {
                 AgentResult.Error("Failed to parse synopsis: ${it.message}", it)
             },

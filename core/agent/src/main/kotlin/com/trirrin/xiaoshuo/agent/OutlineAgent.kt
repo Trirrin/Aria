@@ -37,7 +37,7 @@ class OutlineAgent(
         }
 
         return prompt.parseOutput(response.content).fold(
-            onSuccess = { AgentResult.OutlineResult(it) },
+            onSuccess = { AgentResult.OutlineResult(it, response.toAgentUsage(name, model)) },
             onFailure = {
                 AgentResult.Error("Failed to parse outline: ${it.message}", it)
             },

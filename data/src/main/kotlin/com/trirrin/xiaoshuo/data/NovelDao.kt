@@ -35,8 +35,32 @@ interface NovelDao {
     @Query("SELECT * FROM scenes WHERE chapterId = :chapterId ORDER BY `order` ASC")
     suspend fun getScenes(chapterId: String): List<SceneEntity>
 
+    @Query("SELECT * FROM scenes WHERE novelId = :novelId ORDER BY chapterId ASC, `order` ASC")
+    fun observeScenesForNovel(novelId: String): Flow<List<SceneEntity>>
+
+    @Query("SELECT * FROM scenes WHERE novelId = :novelId ORDER BY chapterId ASC, `order` ASC")
+    suspend fun getScenesForNovel(novelId: String): List<SceneEntity>
+
     @Upsert
     suspend fun upsertScene(scene: SceneEntity)
+
+    @Query("SELECT * FROM revision_snapshots WHERE novelId = :novelId ORDER BY createdAtEpochMillis DESC")
+    fun observeRevisionSnapshots(novelId: String): Flow<List<RevisionSnapshotEntity>>
+
+    @Query("SELECT * FROM revision_snapshots WHERE id = :id")
+    suspend fun getRevisionSnapshot(id: String): RevisionSnapshotEntity?
+
+    @Upsert
+    suspend fun upsertRevisionSnapshot(snapshot: RevisionSnapshotEntity)
+
+    @Query("DELETE FROM revision_snapshots WHERE id = :id")
+    suspend fun deleteRevisionSnapshot(id: String)
+
+    @Query("SELECT * FROM token_usage_records WHERE novelId = :novelId ORDER BY createdAtEpochMillis DESC")
+    fun observeTokenUsage(novelId: String): Flow<List<TokenUsageRecordEntity>>
+
+    @Upsert
+    suspend fun upsertTokenUsage(record: TokenUsageRecordEntity)
 
     @Transaction
     suspend fun upsertNovelGraph(novel: NovelEntity, chapters: List<ChapterEntity>, scenes: List<SceneEntity>) {

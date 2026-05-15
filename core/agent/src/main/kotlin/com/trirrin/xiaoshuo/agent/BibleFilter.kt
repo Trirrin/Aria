@@ -1,5 +1,8 @@
 package com.trirrin.xiaoshuo.agent
 
+import com.trirrin.xiaoshuo.model.BibleConflict
+import com.trirrin.xiaoshuo.model.BibleConflictSection
+import com.trirrin.xiaoshuo.model.BibleEntrySource
 import com.trirrin.xiaoshuo.model.CharacterEntry
 import com.trirrin.xiaoshuo.model.LocationEntry
 import com.trirrin.xiaoshuo.model.NovelBible
@@ -167,17 +170,32 @@ class BibleFilter(private val tokenBudget: Int = 2000) {
 class BibleMerger {
     fun merge(existing: NovelBible, diff: BibleDiff, chapterId: String, sceneId: String): NovelBible {
         val updatedCharacters = existing.characters.toMutableList()
+        val conflicts = existing.conflicts.toMutableList()
 
         for (toAdd in diff.charactersToAdd) {
             val existingIdx = updatedCharacters.indexOfFirst { it.name.equals(toAdd.name, ignoreCase = true) }
             if (existingIdx >= 0) {
                 val existingChar = updatedCharacters[existingIdx]
-                updatedCharacters[existingIdx] = existingChar.copy(
-                    description = toAdd.description.ifBlank { existingChar.description },
-                    personality = toAdd.personality.ifBlank { existingChar.personality },
-                    currentState = toAdd.currentState.ifBlank { existingChar.currentState },
-                    lastUpdatedSceneId = sceneId,
-                )
+                if (existingChar.source == BibleEntrySource.USER) {
+                    conflicts.addAll(
+                        characterConflicts(
+                            existing = existingChar,
+                            incomingDescription = toAdd.description,
+                            incomingPersonality = toAdd.personality,
+                            incomingState = toAdd.currentState,
+                            chapterId = chapterId,
+                            sceneId = sceneId,
+                        ),
+                    )
+                } else {
+                    updatedCharacters[existingIdx] = existingChar.copy(
+                        description = toAdd.description.ifBlank { existingChar.description },
+                        personality = toAdd.personality.ifBlank { existingChar.personality },
+                        currentState = toAdd.currentState.ifBlank { existingChar.currentState },
+                        lastUpdatedSceneId = sceneId,
+                        sourceSceneId = sceneId,
+                    )
+                }
             } else {
                 updatedCharacters.add(
                     CharacterEntry(
@@ -188,6 +206,8 @@ class BibleMerger {
                         currentState = toAdd.currentState,
                         firstAppearanceChapterId = chapterId,
                         lastUpdatedSceneId = sceneId,
+                        sourceChapterId = chapterId,
+                        sourceSceneId = sceneId,
                     ),
                 )
             }
@@ -196,17 +216,56 @@ class BibleMerger {
         for (toUpdate in diff.charactersToUpdate) {
             val idx = updatedCharacters.indexOfFirst { it.name.equals(toUpdate.name, ignoreCase = true) }
             if (idx >= 0) {
-                updatedCharacters[idx] = updatedCharacters[idx].copy(
-                    currentState = toUpdate.updatedState,
-                    lastUpdatedSceneId = sceneId,
-                )
+                val existingChar = updatedCharacters[idx]
+                if (existingChar.source == BibleEntrySource.USER) {
+                    conflicts.add(
+                        BibleConflict(
+                            section = BibleConflictSection.CHARACTERS,
+                            entryId = existingChar.id,
+                            title = existingChar.name,
+                            field = "currentState",
+                            existingValue = existingChar.currentState,
+                            incomingValue = toUpdate.updatedState,
+                            sourceChapterId = chapterId,
+                            sourceSceneId = sceneId,
+                        ),
+                    )
+                } else {
+                    updatedCharacters[idx] = existingChar.copy(
+                        currentState = toUpdate.updatedState,
+                        lastUpdatedSceneId = sceneId,
+                        sourceSceneId = sceneId,
+                    )
+                }
             }
         }
 
         val existingLocationNames = existing.locations.map { it.name.lowercase() }.toSet()
+        diff.locationsToAdd.forEach { incoming ->
+            val location = existing.locations.firstOrNull { it.name.equals(incoming.name, ignoreCase = true) }
+            if (location?.source == BibleEntrySource.USER) {
+                conflicts.addAll(
+                    locationConflicts(
+                        existing = location,
+                        incomingDescription = incoming.description,
+                        incomingSignificance = incoming.significance,
+                        chapterId = chapterId,
+                        sceneId = sceneId,
+                    ),
+                )
+            }
+        }
         val newLocations = diff.locationsToAdd
             .filter { it.name.lowercase() !in existingLocationNames }
-            .map { LocationEntry(it.name, it.description, it.significance) }
+            .map {
+                LocationEntry(
+                    name = it.name,
+                    description = it.description,
+                    significance = it.significance,
+                    sourceChapterId = chapterId,
+                    sourceSceneId = sceneId,
+                )
+            }
 
         val newEvents = diff.timelineEventsToAdd.mapIndexed { index, event ->
             TimelineEvent(event.description, chapterId, sceneId, existing.timelineEvents.size + index)
@@ -215,13 +274,73 @@ class BibleMerger {
         val existingRuleKeys = existing.worldRules.map { "${it.category}|${it.rule}".lowercase() }.toSet()
         val newRules = diff.worldRulesToAdd
             .filter { "${it.category}|${it.rule}".lowercase() !in existingRuleKeys }
-            .map { WorldRule(it.category, it.rule, it.details) }
+            .map {
+                WorldRule(
+                    category = it.category,
+                    rule = it.rule,
+                    details = it.details,
+                    sourceChapterId = chapterId,
+                    sourceSceneId = sceneId,
+                )
+            }
 
         return existing.copy(
             characters = updatedCharacters,
             locations = existing.locations + newLocations,
             timelineEvents = existing.timelineEvents + newEvents,
             worldRules = existing.worldRules + newRules,
+            conflicts = conflicts.distinctBy { listOf(it.section.name, it.entryId, it.field, it.incomingValue).joinToString("|") },
+        )
+    }
+
+    private fun characterConflicts(
+        existing: CharacterEntry,
+        incomingDescription: String,
+        incomingPersonality: String,
+        incomingState: String,
+        chapterId: String,
+        sceneId: String,
+    ): List<BibleConflict> {
+        return listOfNotNull(
+            conflictIfDifferent(existing.id, existing.name, "description", existing.description, incomingDescription, chapterId, sceneId, BibleConflictSection.CHARACTERS),
+            conflictIfDifferent(existing.id, existing.name, "personality", existing.personality, incomingPersonality, chapterId, sceneId, BibleConflictSection.CHARACTERS),
+            conflictIfDifferent(existing.id, existing.name, "currentState", existing.currentState, incomingState, chapterId, sceneId, BibleConflictSection.CHARACTERS),
+        )
+    }
+
+    private fun locationConflicts(
+        existing: LocationEntry,
+        incomingDescription: String,
+        incomingSignificance: String,
+        chapterId: String,
+        sceneId: String,
+    ): List<BibleConflict> {
+        return listOfNotNull(
+            conflictIfDifferent(existing.id, existing.name, "description", existing.description, incomingDescription, chapterId, sceneId, BibleConflictSection.LOCATIONS),
+            conflictIfDifferent(existing.id, existing.name, "significance", existing.significance, incomingSignificance, chapterId, sceneId, BibleConflictSection.LOCATIONS),
+        )
+    }
+
+    private fun conflictIfDifferent(
+        entryId: String,
+        title: String,
+        field: String,
+        existingValue: String,
+        incomingValue: String,
+        chapterId: String,
+        sceneId: String,
+        section: BibleConflictSection,
+    ): BibleConflict? {
+        if (incomingValue.isBlank() || incomingValue == existingValue) return null
+        return BibleConflict(
+            section = section,
+            entryId = entryId,
+            title = title,
+            field = field,
+            existingValue = existingValue,
+            incomingValue = incomingValue,
+            sourceChapterId = chapterId,
+            sourceSceneId = sceneId,
         )
     }
 }
