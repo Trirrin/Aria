@@ -64,6 +64,7 @@ import com.trirrin.xiaoshuo.model.Chapter
 import com.trirrin.xiaoshuo.model.ChapterBrief
 import com.trirrin.xiaoshuo.model.Genre
 import com.trirrin.xiaoshuo.model.Novel
+import com.trirrin.xiaoshuo.model.ReviewReport
 import com.trirrin.xiaoshuo.model.Scene
 
 private enum class WorkspaceTab(val label: String) {
@@ -97,6 +98,14 @@ class MainActivity : ComponentActivity() {
                     onSaveOutline = viewModel::saveOutlineDraft,
                     onSaveSynopsis = viewModel::saveChapterSynopsisDraft,
                     onSaveSceneText = viewModel::saveSceneText,
+                    onAcceptSynopsisReview = viewModel::acceptSelectedSynopsisReview,
+                    onRetrySynopsis = viewModel::retrySelectedSynopsis,
+                    onManualEditSynopsis = viewModel::markSelectedSynopsisForManualEdit,
+                    onApproveSynopsis = viewModel::approveSelectedSynopsis,
+                    onAcceptSceneReview = viewModel::acceptSelectedSceneReview,
+                    onRetryScene = viewModel::retrySelectedScene,
+                    onManualEditScene = viewModel::markSelectedSceneForManualEdit,
+                    onApproveScene = viewModel::approveSelectedScene,
                 )
             }
         }
@@ -134,6 +143,14 @@ private fun XiaoShuoApp(
     onSaveOutline: (OutlineDraft) -> Unit,
     onSaveSynopsis: (ChapterSynopsisDraft) -> Unit,
     onSaveSceneText: (String) -> Unit,
+    onAcceptSynopsisReview: () -> Unit,
+    onRetrySynopsis: () -> Unit,
+    onManualEditSynopsis: () -> Unit,
+    onApproveSynopsis: () -> Unit,
+    onAcceptSceneReview: () -> Unit,
+    onRetryScene: () -> Unit,
+    onManualEditScene: () -> Unit,
+    onApproveScene: () -> Unit,
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
     Scaffold(
@@ -162,7 +179,23 @@ private fun XiaoShuoApp(
             when (WorkspaceTab.entries[selectedTab]) {
                 WorkspaceTab.Library -> LibraryScreen(state, onCreateNovel, onSelectNovel)
                 WorkspaceTab.Outline -> OutlineScreen(state, onGenerateOutline, onSaveOutline)
-                WorkspaceTab.Draft -> DraftScreen(state, onSelectChapter, onSelectScene, onGenerateSynopsis, onGenerateScene, onSaveSynopsis, onSaveSceneText)
+                WorkspaceTab.Draft -> DraftScreen(
+                    state = state,
+                    onSelectChapter = onSelectChapter,
+                    onSelectScene = onSelectScene,
+                    onGenerateSynopsis = onGenerateSynopsis,
+                    onGenerateScene = onGenerateScene,
+                    onSaveSynopsis = onSaveSynopsis,
+                    onSaveSceneText = onSaveSceneText,
+                    onAcceptSynopsisReview = onAcceptSynopsisReview,
+                    onRetrySynopsis = onRetrySynopsis,
+                    onManualEditSynopsis = onManualEditSynopsis,
+                    onApproveSynopsis = onApproveSynopsis,
+                    onAcceptSceneReview = onAcceptSceneReview,
+                    onRetryScene = onRetryScene,
+                    onManualEditScene = onManualEditScene,
+                    onApproveScene = onApproveScene,
+                )
                 WorkspaceTab.Bible -> BibleScreen(state.selectedNovel)
                 WorkspaceTab.Settings -> SettingsScreen(state.settings, onSaveSettings)
             }
@@ -352,6 +385,14 @@ private fun DraftScreen(
     onGenerateScene: () -> Unit,
     onSaveSynopsis: (ChapterSynopsisDraft) -> Unit,
     onSaveSceneText: (String) -> Unit,
+    onAcceptSynopsisReview: () -> Unit,
+    onRetrySynopsis: () -> Unit,
+    onManualEditSynopsis: () -> Unit,
+    onApproveSynopsis: () -> Unit,
+    onAcceptSceneReview: () -> Unit,
+    onRetryScene: () -> Unit,
+    onManualEditScene: () -> Unit,
+    onApproveScene: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -368,7 +409,7 @@ private fun DraftScreen(
                     items(state.chapters, key = { it.id }) { chapter ->
                         SelectableRow(
                             title = "${chapter.order}. ${chapter.title}",
-                            subtitle = chapter.status.name,
+                            subtitle = chapterListSubtitle(chapter),
                             selected = chapter.id == state.selectedChapter?.id,
                             onClick = { onSelectChapter(chapter.id) },
                         )
@@ -386,7 +427,15 @@ private fun DraftScreen(
                     Text("Synopsis")
                 }
             }
-            ChapterSynopsisEditor(state.selectedChapter, state.workflow.isBusy, onSaveSynopsis)
+            ChapterSynopsisEditor(
+                chapter = state.selectedChapter,
+                isBusy = state.workflow.isBusy,
+                onSave = onSaveSynopsis,
+                onAcceptReview = onAcceptSynopsisReview,
+                onRetry = onRetrySynopsis,
+                onManualEdit = onManualEditSynopsis,
+                onApprove = onApproveSynopsis,
+            )
             if (state.scenes.isEmpty()) {
                 EmptyText("No scene breakdowns yet.")
             } else {
@@ -394,7 +443,7 @@ private fun DraftScreen(
                     items(state.scenes, key = { it.id }) { scene ->
                         SelectableRow(
                             title = "Scene ${scene.order}",
-                            subtitle = "${scene.status.name} - ${scene.wordCount} words",
+                            subtitle = sceneListSubtitle(scene),
                             selected = scene.id == state.selectedScene?.id,
                             onClick = { onSelectScene(scene.id) },
                         )
@@ -412,7 +461,15 @@ private fun DraftScreen(
                     Text("Generate")
                 }
             }
-            SceneEditor(state.selectedScene, state.workflow.isBusy, onSaveSceneText)
+            SceneEditor(
+                scene = state.selectedScene,
+                isBusy = state.workflow.isBusy,
+                onSaveText = onSaveSceneText,
+                onAcceptReview = onAcceptSceneReview,
+                onRetry = onRetryScene,
+                onManualEdit = onManualEditScene,
+                onApprove = onApproveScene,
+            )
         }
     }
 }
@@ -490,6 +547,10 @@ private fun ChapterSynopsisEditor(
     chapter: Chapter?,
     isBusy: Boolean,
     onSave: (ChapterSynopsisDraft) -> Unit,
+    onAcceptReview: () -> Unit,
+    onRetry: () -> Unit,
+    onManualEdit: () -> Unit,
+    onApprove: () -> Unit,
 ) {
     val synopsis = chapter?.synopsis
     if (synopsis == null) {
@@ -504,6 +565,14 @@ private fun ChapterSynopsisEditor(
     var transition by remember(chapter.id, initialDraft) { mutableStateOf(initialDraft.transitionNotes) }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        ReviewPanel(
+            report = chapter.reviewReport,
+            isBusy = isBusy,
+            onAccept = onAcceptReview,
+            onRetry = onRetry,
+            onManualEdit = onManualEdit,
+            onApprove = onApprove,
+        )
         OutlinedTextField(
             value = goal,
             onValueChange = { goal = it },
@@ -551,7 +620,15 @@ private fun ChapterSynopsisEditor(
 }
 
 @Composable
-private fun SceneEditor(scene: Scene?, isBusy: Boolean, onSaveText: (String) -> Unit) {
+private fun SceneEditor(
+    scene: Scene?,
+    isBusy: Boolean,
+    onSaveText: (String) -> Unit,
+    onAcceptReview: () -> Unit,
+    onRetry: () -> Unit,
+    onManualEdit: () -> Unit,
+    onApprove: () -> Unit,
+) {
     if (scene == null) {
         EmptyText("Select a scene.")
         return
@@ -564,10 +641,14 @@ private fun SceneEditor(scene: Scene?, isBusy: Boolean, onSaveText: (String) -> 
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         CompactBlock("Synopsis", scene.synopsis)
-        val reviewNotes = scene.reviewNotes
-        if (reviewNotes?.isNotBlank() == true) {
-            CompactBlock("Review", reviewNotes)
-        }
+        ReviewPanel(
+            report = scene.reviewReport,
+            isBusy = isBusy,
+            onAccept = onAcceptReview,
+            onRetry = onRetry,
+            onManualEdit = onManualEdit,
+            onApprove = onApprove,
+        )
         OutlinedTextField(
             value = text,
             onValueChange = { text = it },
@@ -790,6 +871,56 @@ private fun SelectableRow(title: String, subtitle: String, selected: Boolean, on
 }
 
 @Composable
+private fun ReviewPanel(
+    report: ReviewReport?,
+    isBusy: Boolean,
+    onAccept: () -> Unit,
+    onRetry: () -> Unit,
+    onManualEdit: () -> Unit,
+    onApprove: () -> Unit,
+) {
+    if (report == null) return
+    val accent = if (report.passed) MaterialTheme.colorScheme.primary else Color(0xFF9A2E2E)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+            .border(1.dp, accent.copy(alpha = 0.42f), RoundedCornerShape(8.dp))
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Review", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            Text("${report.score}/10", style = MaterialTheme.typography.labelLarge, color = accent, fontWeight = FontWeight.SemiBold)
+        }
+        MetricStrip(
+            "Result" to if (report.passed) "Passed" else "Failed",
+            "Status" to report.status.name,
+            "Retries" to report.retryCount.toString(),
+        )
+        ReviewList("Issues", report.issues)
+        ReviewList("Suggested fixes", report.suggestedFixes)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = onAccept, enabled = !isBusy) { Text("Accept") }
+            OutlinedButton(onClick = onRetry, enabled = !isBusy) { Text("Retry") }
+            OutlinedButton(onClick = onManualEdit, enabled = !isBusy) { Text("Edit Manually") }
+            Button(onClick = onApprove, enabled = !isBusy) { Text("Mark Approved") }
+        }
+    }
+}
+
+@Composable
+private fun ReviewList(title: String, items: List<String>) {
+    if (items.isEmpty()) return
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(title, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+        items.forEach { item ->
+            Text("- $item", style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
 private fun CompactBlock(title: String, body: String) {
     Column(
         modifier = Modifier
@@ -809,6 +940,26 @@ private fun ChapterBriefBlock(brief: ChapterBrief) {
         title = "${brief.chapterIndex}. ${brief.title}",
         body = "${brief.plotBeats}\n\n${brief.purposeInStory}",
     )
+}
+
+private fun chapterListSubtitle(chapter: Chapter): String {
+    return listOfNotNull(
+        chapter.status.name,
+        chapter.reviewReport?.let { reviewBadge(it) },
+    ).joinToString(" - ")
+}
+
+private fun sceneListSubtitle(scene: Scene): String {
+    return listOfNotNull(
+        scene.status.name,
+        "${scene.wordCount} words",
+        scene.reviewReport?.let { reviewBadge(it) },
+    ).joinToString(" - ")
+}
+
+private fun reviewBadge(report: ReviewReport): String {
+    val result = if (report.passed) "review passed" else "review failed"
+    return "$result ${report.score}/10 ${report.status.name}"
 }
 
 @Composable

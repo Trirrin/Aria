@@ -8,8 +8,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
 class SceneExpansionAgent(
-    private val llmClient: LlmClient,
-    private val model: String,
+    internal val llmClient: LlmClient,
+    internal val model: String,
     private val bibleFilter: BibleFilter,
 ) : Agent {
 

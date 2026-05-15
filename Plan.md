@@ -93,11 +93,16 @@ Settings are stored with DataStore. API keys are currently local settings data; 
   - Editable chapter synopsis and scene breakdowns with persistence.
   - Editable scene prose with persistence and word-count recalculation.
   - Chapter and scene shell updates preserve existing user text.
+- Review and retry workflow:
+  - Review score, issues, suggested fixes, pass/fail, retry count, and decision status persist on chapters and scenes.
+  - Draft workspace shows structured review panels for chapter synopsis and scene prose.
+  - User can accept, retry with feedback, mark for manual edit, or mark approved.
+  - Retry attempts are capped in the ViewModel.
+  - Failed scene reviews do not update the Novel Bible.
 - `./gradlew build` passes.
 
 ### Partially Implemented
 
-- Review loop: review results are emitted and lightly stored/displayed, but there is no dedicated review workflow.
 - Scene continuity: previous scene ending is passed for selected scene generation, but broader chapter/novel continuity UX is thin.
 - Bible workflow: facts can be extracted and viewed, but manual editing/conflict resolution is missing.
 - Streaming: core pipeline exposes `streamScene`, but the Compose UI currently saves only completed scene text.
@@ -106,7 +111,6 @@ Settings are stored with DataStore. API keys are currently local settings data; 
 
 ### Not Yet Implemented
 
-- Dedicated review screen with accept/retry/revise actions.
 - Bible editor for characters, locations, timeline, world rules, and themes.
 - Bible conflict warnings and user resolution.
 - Generation queue for chapter/scene batches.
@@ -187,17 +191,18 @@ Acceptance criteria:
 - A user can edit generated prose before continuity extraction or export.
 - Existing generated text is not overwritten unless the user explicitly regenerates.
 
-### Phase 5: Review And Retry Workflow
+### Phase 5: Review And Retry Workflow - Done
 
 Goal: make review results useful instead of decorative.
 
-Tasks:
+Done:
 
-1. Persist review score, issues, and suggested fixes separately instead of flattening everything into text.
-2. Add review panel for outline/synopsis/prose compliance.
+1. Persist review score, issues, suggested fixes, pass/fail, retry count, and decision status separately from legacy review notes.
+2. Add review panels for synopsis/prose compliance in the Draft workspace.
 3. Add actions: accept, retry with feedback, edit manually, mark approved.
-4. Implement max retry policy in the pipeline or ViewModel.
+4. Implement max retry policy in the ViewModel.
 5. Show failed review state clearly in chapter/scene lists.
+6. Block Bible updates when scene review fails.
 
 Acceptance criteria:
 

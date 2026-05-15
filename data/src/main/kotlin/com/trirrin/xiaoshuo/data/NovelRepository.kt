@@ -8,6 +8,7 @@ import com.trirrin.xiaoshuo.model.Novel
 import com.trirrin.xiaoshuo.model.NovelBible
 import com.trirrin.xiaoshuo.model.NovelOutline
 import com.trirrin.xiaoshuo.model.NovelStatus
+import com.trirrin.xiaoshuo.model.ReviewReport
 import com.trirrin.xiaoshuo.model.Scene
 import com.trirrin.xiaoshuo.model.SceneStatus
 import com.trirrin.xiaoshuo.model.StyleGuide
@@ -50,15 +51,15 @@ class NovelRepository(
     }
 
     fun observeScenes(chapterId: String): Flow<List<Scene>> {
-        return dao.observeScenes(chapterId).map { scenes -> scenes.map { it.toModel() } }
+        return dao.observeScenes(chapterId).map { scenes -> scenes.map { it.toModel(json) } }
     }
 
     suspend fun getScenes(chapterId: String): List<Scene> {
-        return dao.getScenes(chapterId).map { it.toModel() }
+        return dao.getScenes(chapterId).map { it.toModel(json) }
     }
 
     suspend fun upsertScene(scene: Scene) {
-        dao.upsertScene(scene.toEntity())
+        dao.upsertScene(scene.toEntity(json))
     }
 }
 
@@ -102,6 +103,7 @@ private fun Chapter.toEntity(json: Json): ChapterEntity {
         title = title,
         synopsisJson = synopsis?.let { json.encodeToString(it) },
         reviewNotes = reviewNotes,
+        reviewReportJson = reviewReport?.let { json.encodeToString(it) },
         status = status.name,
     )
 }
@@ -114,11 +116,12 @@ private fun ChapterEntity.toModel(json: Json): Chapter {
         title = title,
         synopsis = synopsisJson?.let { json.decodeFromString<ChapterSynopsis>(it) },
         reviewNotes = reviewNotes,
+        reviewReport = reviewReportJson?.let { json.decodeFromString<ReviewReport>(it) },
         status = enumValueOf<ChapterStatus>(status),
     )
 }
 
-private fun Scene.toEntity(): SceneEntity {
+private fun Scene.toEntity(json: Json): SceneEntity {
     return SceneEntity(
         id = id,
         chapterId = chapterId,
@@ -127,12 +130,13 @@ private fun Scene.toEntity(): SceneEntity {
         synopsis = synopsis,
         text = text,
         reviewNotes = reviewNotes,
+        reviewReportJson = reviewReport?.let { json.encodeToString(it) },
         status = status.name,
         wordCount = wordCount,
     )
 }
 
-private fun SceneEntity.toModel(): Scene {
+private fun SceneEntity.toModel(json: Json): Scene {
     return Scene(
         id = id,
         chapterId = chapterId,
@@ -141,6 +145,7 @@ private fun SceneEntity.toModel(): Scene {
         synopsis = synopsis,
         text = text,
         reviewNotes = reviewNotes,
+        reviewReport = reviewReportJson?.let { json.decodeFromString<ReviewReport>(it) },
         status = enumValueOf<SceneStatus>(status),
         wordCount = wordCount,
     )

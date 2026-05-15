@@ -39,6 +39,7 @@ data class ChapterEntity(
     val title: String,
     val synopsisJson: String?,
     val reviewNotes: String?,
+    val reviewReportJson: String?,
     val status: String,
 )
 
@@ -68,6 +69,7 @@ data class SceneEntity(
     val synopsis: String,
     val text: String,
     val reviewNotes: String?,
+    val reviewReportJson: String?,
     val status: String,
     val wordCount: Int,
 )

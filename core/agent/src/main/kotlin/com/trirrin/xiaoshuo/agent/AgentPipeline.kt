@@ -1,7 +1,14 @@
 package com.trirrin.xiaoshuo.agent
 
+import com.trirrin.xiaoshuo.llm.LlmMessage
+import com.trirrin.xiaoshuo.llm.LlmRequest
+import com.trirrin.xiaoshuo.llm.MessageRole
+import com.trirrin.xiaoshuo.prompt.ChapterSynopsisInput
+import com.trirrin.xiaoshuo.prompt.ChapterSynopsisPrompt
 import com.trirrin.xiaoshuo.model.*
 import com.trirrin.xiaoshuo.prompt.OutlineInput
+import com.trirrin.xiaoshuo.prompt.SceneExpansionInput
+import com.trirrin.xiaoshuo.prompt.SceneExpansionPrompt
 import com.trirrin.xiaoshuo.prompt.ReviewType
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -33,6 +40,7 @@ class AgentPipeline(
     private val reviewAgent: ReviewAgent,
     private val continuityAgent: ContinuityAgent,
     private val bibleMerger: BibleMerger,
+    private val config: PipelineConfig? = null,
 ) {
 
     suspend fun generateOutline(
@@ -70,13 +78,18 @@ class AgentPipeline(
         chapter: Chapter,
         chapters: List<Chapter>,
         previousChapterEnding: String? = null,
+        reviewFeedback: String? = null,
     ): Pair<ChapterSynopsis?, AgentResult.ReviewResult?> {
-        val synopsisResult = chapterSynopsisAgent.generate(
-            novel = novel,
-            chapter = chapter,
-            chapters = chapters,
-            previousChapterEnding = previousChapterEnding,
-        )
+        val synopsisResult = if (reviewFeedback.isNullOrBlank()) {
+            chapterSynopsisAgent.generate(
+                novel = novel,
+                chapter = chapter,
+                chapters = chapters,
+                previousChapterEnding = previousChapterEnding,
+            )
+        } else {
+            regenerateChapterSynopsis(novel, chapter, previousChapterEnding, reviewFeedback)
+        }
 
         val synopsis = when (synopsisResult) {
             is AgentResult.SynopsisResult -> synopsisResult.synopsis
@@ -105,15 +118,20 @@ class AgentPipeline(
         chapter: Chapter,
         scene: Scene,
         previousSceneEnding: String? = null,
+        reviewFeedback: String? = null,
     ): Flow<PipelineEvent> = flow {
         emit(PipelineEvent.Step("scene_expansion", "Generating scene ${scene.order} text"))
 
-        val result = sceneExpansionAgent.generate(
-            novel = novel,
-            chapter = chapter,
-            scene = scene,
-            previousSceneEnding = previousSceneEnding,
-        )
+        val result = if (reviewFeedback.isNullOrBlank()) {
+            sceneExpansionAgent.generate(
+                novel = novel,
+                chapter = chapter,
+                scene = scene,
+                previousSceneEnding = previousSceneEnding,
+            )
+        } else {
+            regenerateScene(novel, chapter, scene, previousSceneEnding, reviewFeedback)
+        }
 
         val text = when (result) {
             is AgentResult.SceneTextResult -> {
@@ -140,8 +158,11 @@ class AgentPipeline(
             reviewType = ReviewType.TEXT_AGAINST_SYNOPSIS,
         )
         when (reviewResult) {
-            is AgentResult.ReviewResult -> emit(PipelineEvent.ReviewComplete(reviewResult))
-            else -> {}
+            is AgentResult.ReviewResult -> {
+                emit(PipelineEvent.ReviewComplete(reviewResult))
+                if (!reviewResult.passed) return@flow
+            }
+            else -> return@flow
         }
 
         emit(PipelineEvent.Step("continuity", "Extracting facts for Bible update"))
@@ -162,6 +183,103 @@ class AgentPipeline(
                 emit(PipelineEvent.Error("Continuity extraction failed: ${continuityResult.message}"))
             }
             else -> {}
+        }
+    }
+
+    private suspend fun regenerateChapterSynopsis(
+        novel: Novel,
+        chapter: Chapter,
+        previousChapterEnding: String?,
+        reviewFeedback: String,
+    ): AgentResult {
+        val outline = novel.outline ?: return AgentResult.Error("Novel has no outline")
+        val brief = outline.chapterBriefs.find { it.chapterIndex == chapter.order }
+            ?: return AgentResult.Error("No brief found for chapter ${chapter.order}")
+        val prompt = ChapterSynopsisPrompt()
+        val input = ChapterSynopsisInput(
+            chapterBrief = brief,
+            previousChapterBrief = outline.chapterBriefs.find { it.chapterIndex == chapter.order - 1 },
+            nextChapterBrief = outline.chapterBriefs.find { it.chapterIndex == chapter.order + 1 },
+            premise = outline.premise,
+            majorPlotPoints = outline.majorPlotPoints,
+            relevantCharacters = novel.bible.characters,
+            relevantLocations = novel.bible.locations,
+            previousChapterEnding = previousChapterEnding,
+        )
+        val userPrompt = buildString {
+            append(prompt.buildUserPrompt(input))
+            appendLine()
+            appendLine("REVIEW FEEDBACK TO FIX:")
+            appendLine(reviewFeedback)
+            appendLine()
+            appendLine("Regenerate the chapter synopsis JSON. Fix the review issues without dropping valid story beats.")
+        }
+        val request = LlmRequest(
+            systemPrompt = prompt.buildSystemPrompt(),
+            messages = listOf(LlmMessage(MessageRole.USER, userPrompt)),
+            model = chapterSynopsisAgent.model,
+            maxTokens = 4096,
+            temperature = 0.7,
+        )
+        return try {
+            val response = chapterSynopsisAgent.llmClient.complete(request)
+            prompt.parseOutput(response.content).fold(
+                onSuccess = { AgentResult.SynopsisResult(it) },
+                onFailure = { AgentResult.Error("Failed to parse retried synopsis: ${it.message}", it) },
+            )
+        } catch (e: Exception) {
+            AgentResult.Error("LLM retry failed: ${e.message}", e)
+        }
+    }
+
+    private suspend fun regenerateScene(
+        novel: Novel,
+        chapter: Chapter,
+        scene: Scene,
+        previousSceneEnding: String?,
+        reviewFeedback: String,
+    ): AgentResult {
+        val synopsis = chapter.synopsis ?: return AgentResult.Error("Chapter has no synopsis")
+        val breakdown = synopsis.sceneBreakdowns.find { it.sceneIndex == scene.order }
+            ?: return AgentResult.Error("No breakdown found for scene ${scene.order}")
+        val prompt = SceneExpansionPrompt()
+        val input = SceneExpansionInput(
+            sceneBreakdown = breakdown,
+            chapterGoal = synopsis.chapterGoal,
+            relevantCharacters = novel.bible.characters,
+            relevantLocations = novel.bible.locations,
+            relevantWorldRules = novel.bible.worldRules,
+            previousSceneEnding = previousSceneEnding,
+            styleGuide = novel.styleGuide,
+        )
+        val userPrompt = buildString {
+            append(prompt.buildUserPrompt(input))
+            appendLine()
+            appendLine("REVIEW FEEDBACK TO FIX:")
+            appendLine(reviewFeedback)
+            appendLine()
+            appendLine("Regenerate the prose. Preserve useful material, but fix the review issues and output only story text.")
+        }
+        val request = LlmRequest(
+            systemPrompt = prompt.buildSystemPrompt(),
+            messages = listOf(LlmMessage(MessageRole.USER, userPrompt)),
+            model = sceneExpansionAgent.model,
+            maxTokens = breakdown.targetWordCount * 2,
+            temperature = 0.85,
+        )
+        return try {
+            val response = sceneExpansionAgent.llmClient.complete(request)
+            prompt.parseOutput(response.content).fold(
+                onSuccess = {
+                    AgentResult.SceneTextResult(
+                        text = it,
+                        wordCount = it.split(Regex("\\s+")).count { word -> word.isNotBlank() },
+                    )
+                },
+                onFailure = { AgentResult.Error("Failed to process retried scene text: ${it.message}", it) },
+            )
+        } catch (e: Exception) {
+            AgentResult.Error("LLM retry failed: ${e.message}", e)
         }
     }
 

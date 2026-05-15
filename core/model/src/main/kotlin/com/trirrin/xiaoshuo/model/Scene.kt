@@ -12,6 +12,7 @@ data class Scene(
     val synopsis: String = "",
     val text: String = "",
     val reviewNotes: String? = null,
+    val reviewReport: ReviewReport? = null,
     val status: SceneStatus = SceneStatus.PENDING,
     val wordCount: Int = 0,
 )

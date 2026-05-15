@@ -10,8 +10,8 @@ import com.trirrin.xiaoshuo.prompt.ChapterSynopsisInput
 import com.trirrin.xiaoshuo.prompt.ChapterSynopsisPrompt
 
 class ChapterSynopsisAgent(
-    private val llmClient: LlmClient,
-    private val model: String,
+    internal val llmClient: LlmClient,
+    internal val model: String,
     private val bibleFilter: BibleFilter,
 ) : Agent {
 

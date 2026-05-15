@@ -6,6 +6,7 @@ import com.trirrin.xiaoshuo.agent.BibleFilter
 import com.trirrin.xiaoshuo.agent.BibleMerger
 import com.trirrin.xiaoshuo.agent.ChapterSynopsisAgent
 import com.trirrin.xiaoshuo.agent.ContinuityAgent
+import com.trirrin.xiaoshuo.agent.PipelineConfig
 import com.trirrin.xiaoshuo.agent.OutlineAgent
 import com.trirrin.xiaoshuo.agent.ReviewAgent
 import com.trirrin.xiaoshuo.agent.SceneExpansionAgent
@@ -45,6 +46,13 @@ class AppContainer(application: Application) {
             reviewAgent = ReviewAgent(llmClient, settings.reviewModel),
             continuityAgent = ContinuityAgent(llmClient, settings.continuityModel),
             bibleMerger = BibleMerger(),
+            config = PipelineConfig(
+                outlineModel = settings.outlineModel,
+                synopsisModel = settings.synopsisModel,
+                textModel = settings.textModel,
+                reviewModel = settings.reviewModel,
+                continuityModel = settings.continuityModel,
+            ),
         )
     }
 }

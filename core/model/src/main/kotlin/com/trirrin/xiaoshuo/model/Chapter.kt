@@ -11,6 +11,7 @@ data class Chapter(
     val title: String = "",
     val synopsis: ChapterSynopsis? = null,
     val reviewNotes: String? = null,
+    val reviewReport: ReviewReport? = null,
     val status: ChapterStatus = ChapterStatus.PENDING,
 )
 

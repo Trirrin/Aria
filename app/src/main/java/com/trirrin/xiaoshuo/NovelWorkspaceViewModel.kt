@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.trirrin.xiaoshuo.agent.AgentPipeline
+import com.trirrin.xiaoshuo.agent.AgentResult
 import com.trirrin.xiaoshuo.agent.PipelineEvent
 import com.trirrin.xiaoshuo.data.GenerationSettings
 import com.trirrin.xiaoshuo.data.GenerationSettingsRepository
@@ -17,6 +18,8 @@ import com.trirrin.xiaoshuo.model.Novel
 import com.trirrin.xiaoshuo.model.NovelOutline
 import com.trirrin.xiaoshuo.model.NovelStatus
 import com.trirrin.xiaoshuo.model.PlotPoint
+import com.trirrin.xiaoshuo.model.ReviewReport
+import com.trirrin.xiaoshuo.model.ReviewStatus
 import com.trirrin.xiaoshuo.model.Scene
 import com.trirrin.xiaoshuo.model.SceneBreakdown
 import com.trirrin.xiaoshuo.model.SceneStatus
@@ -194,6 +197,7 @@ class NovelWorkspaceViewModel(
             novelRepository.upsertChapter(
                 chapter.copy(
                     synopsis = synopsis,
+                    reviewReport = chapter.reviewReport?.copy(status = ReviewStatus.MANUAL_EDIT),
                     status = ChapterStatus.SYNOPSIS_GENERATED,
                 ),
             )
@@ -213,6 +217,7 @@ class NovelWorkspaceViewModel(
                 scene.copy(
                     text = text,
                     wordCount = countWords(text),
+                    reviewReport = scene.reviewReport?.copy(status = ReviewStatus.MANUAL_EDIT),
                     status = if (text.isBlank()) SceneStatus.PENDING else SceneStatus.GENERATED,
                 ),
             )
@@ -242,18 +247,78 @@ class NovelWorkspaceViewModel(
     }
 
     fun generateSelectedSynopsis() {
-        runPipelineStep("Generating chapter synopsis") { novel, settings ->
+        generateSelectedSynopsis(reviewFeedback = null, retryCount = null, busyMessage = "Generating chapter synopsis")
+    }
+
+    fun retrySelectedSynopsis() {
+        val report = uiState.value.selectedChapter?.reviewReport ?: run {
+            setError("No chapter review exists")
+            return
+        }
+        if (report.retryCount >= MAX_REVIEW_RETRIES) {
+            setError("Chapter review retry limit reached")
+            return
+        }
+        val nextReport = report.copy(status = ReviewStatus.NEEDS_RETRY, retryCount = report.retryCount + 1)
+        generateSelectedSynopsis(
+            reviewFeedback = nextReport.toFeedback(),
+            retryCount = nextReport.retryCount,
+            busyMessage = "Retrying chapter synopsis",
+        )
+    }
+
+    fun acceptSelectedSynopsisReview() {
+        val chapter = uiState.value.selectedChapter ?: run {
+            setError("Select a chapter first")
+            return
+        }
+        viewModelScope.launch {
+            novelRepository.upsertChapter(chapter.copy(reviewReport = chapter.reviewReport?.copy(status = ReviewStatus.ACCEPTED)))
+            appendEvent("Chapter review accepted")
+        }
+    }
+
+    fun markSelectedSynopsisForManualEdit() {
+        val chapter = uiState.value.selectedChapter ?: run {
+            setError("Select a chapter first")
+            return
+        }
+        viewModelScope.launch {
+            novelRepository.upsertChapter(chapter.copy(reviewReport = chapter.reviewReport?.copy(status = ReviewStatus.MANUAL_EDIT)))
+            appendEvent("Chapter marked for manual edit")
+        }
+    }
+
+    fun approveSelectedSynopsis() {
+        val chapter = uiState.value.selectedChapter ?: run {
+            setError("Select a chapter first")
+            return
+        }
+        viewModelScope.launch {
+            novelRepository.upsertChapter(
+                chapter.copy(
+                    reviewReport = chapter.reviewReport?.copy(status = ReviewStatus.APPROVED),
+                    status = ChapterStatus.SYNOPSIS_APPROVED,
+                ),
+            )
+            appendEvent("Chapter synopsis approved")
+        }
+    }
+
+    private fun generateSelectedSynopsis(reviewFeedback: String?, retryCount: Int?, busyMessage: String) {
+        runPipelineStep(busyMessage) { novel, settings ->
             require(settings.apiKey.isNotBlank()) { "API key is required before generation" }
             require(novel.outline != null) { "Generate an outline first" }
             val chapters = novelRepository.getChapters(novel.id)
             val currentChapterId = uiState.value.selectedChapter?.id
             val chapter = chapters.firstOrNull { it.id == currentChapterId } ?: chapters.firstOrNull() ?: error("No chapter shell exists")
             val pipeline = pipelineFactory(settings)
-            val (synopsis, review) = pipeline.generateChapterSynopsis(novel, chapter, chapters)
+            val (synopsis, review) = pipeline.generateChapterSynopsis(novel, chapter, chapters, reviewFeedback = reviewFeedback)
             val generated = synopsis ?: error("Synopsis generation failed")
             val updatedChapter = chapter.copy(
                 synopsis = generated,
-                reviewNotes = review?.issues?.joinToString("\n"),
+                reviewNotes = review?.toReport(retryCount ?: 0)?.toNotes(),
+                reviewReport = review?.toReport(retryCount ?: 0),
                 status = ChapterStatus.SYNOPSIS_GENERATED,
             )
             novelRepository.upsertChapter(updatedChapter)
@@ -265,7 +330,66 @@ class NovelWorkspaceViewModel(
     }
 
     fun generateSelectedScene() {
-        runPipelineStep("Generating scene") { novel, settings ->
+        generateSelectedScene(reviewFeedback = null, retryCount = null, busyMessage = "Generating scene")
+    }
+
+    fun retrySelectedScene() {
+        val report = uiState.value.selectedScene?.reviewReport ?: run {
+            setError("No scene review exists")
+            return
+        }
+        if (report.retryCount >= MAX_REVIEW_RETRIES) {
+            setError("Scene review retry limit reached")
+            return
+        }
+        val nextReport = report.copy(status = ReviewStatus.NEEDS_RETRY, retryCount = report.retryCount + 1)
+        generateSelectedScene(
+            reviewFeedback = nextReport.toFeedback(),
+            retryCount = nextReport.retryCount,
+            busyMessage = "Retrying scene",
+        )
+    }
+
+    fun acceptSelectedSceneReview() {
+        val scene = uiState.value.selectedScene ?: run {
+            setError("Select a scene first")
+            return
+        }
+        viewModelScope.launch {
+            novelRepository.upsertScene(scene.copy(reviewReport = scene.reviewReport?.copy(status = ReviewStatus.ACCEPTED)))
+            appendEvent("Scene review accepted")
+        }
+    }
+
+    fun markSelectedSceneForManualEdit() {
+        val scene = uiState.value.selectedScene ?: run {
+            setError("Select a scene first")
+            return
+        }
+        viewModelScope.launch {
+            novelRepository.upsertScene(scene.copy(reviewReport = scene.reviewReport?.copy(status = ReviewStatus.MANUAL_EDIT)))
+            appendEvent("Scene marked for manual edit")
+        }
+    }
+
+    fun approveSelectedScene() {
+        val scene = uiState.value.selectedScene ?: run {
+            setError("Select a scene first")
+            return
+        }
+        viewModelScope.launch {
+            novelRepository.upsertScene(
+                scene.copy(
+                    reviewReport = scene.reviewReport?.copy(status = ReviewStatus.APPROVED),
+                    status = SceneStatus.APPROVED,
+                ),
+            )
+            appendEvent("Scene approved")
+        }
+    }
+
+    private fun generateSelectedScene(reviewFeedback: String?, retryCount: Int?, busyMessage: String) {
+        runPipelineStep(busyMessage) { novel, settings ->
             require(settings.apiKey.isNotBlank()) { "API key is required before generation" }
             val chapters = novelRepository.getChapters(novel.id)
             val currentChapterId = uiState.value.selectedChapter?.id
@@ -286,9 +410,10 @@ class NovelWorkspaceViewModel(
             var generatedText = scene.text
             var generatedWordCount = scene.wordCount
             var updatedBible = novel.bible
+            var reviewReport: ReviewReport? = null
 
             novelRepository.upsertScene(scene.copy(status = SceneStatus.GENERATING))
-            pipeline.generateScene(novel, chapter, scene, previousSceneEnding).collect { event ->
+            pipeline.generateScene(novel, chapter, scene, previousSceneEnding, reviewFeedback = reviewFeedback).collect { event ->
                 appendPipelineEvent(event)
                 when (event) {
                     is PipelineEvent.SceneTextComplete -> {
@@ -296,6 +421,7 @@ class NovelWorkspaceViewModel(
                         generatedWordCount = event.wordCount
                     }
                     is PipelineEvent.BibleUpdated -> updatedBible = event.bible
+                    is PipelineEvent.ReviewComplete -> reviewReport = event.result.toReport(retryCount ?: 0)
                     else -> Unit
                 }
             }
@@ -304,7 +430,9 @@ class NovelWorkspaceViewModel(
                 scene.copy(
                     text = generatedText,
                     wordCount = generatedWordCount,
-                    status = SceneStatus.GENERATED,
+                    reviewNotes = reviewReport?.toNotes(),
+                    reviewReport = reviewReport,
+                    status = if (reviewReport?.passed == true) SceneStatus.REVIEWED else SceneStatus.GENERATED,
                 ),
             )
             novelRepository.upsertNovel(novel.copy(bible = updatedBible, updatedAt = Clock.System.now()))
@@ -387,6 +515,10 @@ class NovelWorkspaceViewModel(
 
     private fun setError(message: String) {
         workflow.update { state -> state.copy(error = message, events = (state.events + "Error: $message").takeLast(12)) }
+    }
+
+    companion object {
+        const val MAX_REVIEW_RETRIES = 2
     }
 
     class Factory(private val container: AppContainer) : ViewModelProvider.Factory {
@@ -499,6 +631,52 @@ private fun splitDraftLine(line: String, limit: Int): List<String> {
 
 private fun countWords(text: String): Int {
     return text.trim().split(Regex("\\s+")).count { it.isNotBlank() }
+}
+
+private fun AgentResult.ReviewResult.toReport(retryCount: Int): ReviewReport {
+    return ReviewReport(
+        score = score,
+        issues = issues,
+        suggestedFixes = suggestedFixes,
+        passed = passed,
+        retryCount = retryCount,
+        status = ReviewStatus.PENDING_DECISION,
+    )
+}
+
+private fun ReviewReport.toNotes(): String {
+    return buildString {
+        appendLine("Score: $score/10")
+        appendLine("Passed: $passed")
+        if (issues.isNotEmpty()) {
+            appendLine()
+            appendLine("Issues:")
+            issues.forEach { appendLine("- $it") }
+        }
+        if (suggestedFixes.isNotEmpty()) {
+            appendLine()
+            appendLine("Suggested fixes:")
+            suggestedFixes.forEach { appendLine("- $it") }
+        }
+    }.trim()
+}
+
+private fun ReviewReport.toFeedback(): String {
+    return buildString {
+        appendLine("Previous review score: $score/10")
+        appendLine("Previous review passed: $passed")
+        appendLine("Retry attempt: $retryCount")
+        if (issues.isNotEmpty()) {
+            appendLine()
+            appendLine("Issues to fix:")
+            issues.forEach { appendLine("- $it") }
+        }
+        if (suggestedFixes.isNotEmpty()) {
+            appendLine()
+            appendLine("Suggested fixes:")
+            suggestedFixes.forEach { appendLine("- $it") }
+        }
+    }.trim()
 }
 
 private data class WorkspaceData(
