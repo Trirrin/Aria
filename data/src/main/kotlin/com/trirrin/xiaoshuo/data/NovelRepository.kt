@@ -73,6 +73,10 @@ class NovelRepository(
         dao.upsertScene(scene.toEntity(json))
     }
 
+    suspend fun resetInterruptedScenes(): Int {
+        return dao.resetGeneratingScenes()
+    }
+
     fun observeRevisionSnapshots(novelId: String): Flow<List<RevisionSnapshot>> {
         return dao.observeRevisionSnapshots(novelId).map { snapshots -> snapshots.map { it.toModel() } }
     }

@@ -36,7 +36,9 @@ import com.trirrin.xiaoshuo.model.TimelineEvent
 import com.trirrin.xiaoshuo.model.WorldRule
 import com.trirrin.xiaoshuo.model.SceneBreakdown
 import com.trirrin.xiaoshuo.model.SceneStatus
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -47,6 +49,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.datetime.Clock
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -63,6 +67,16 @@ class NovelWorkspaceViewModel(
     private val selectedNovelId = MutableStateFlow<String?>(null)
     private val selectedChapterId = MutableStateFlow<String?>(null)
     private val selectedSceneId = MutableStateFlow<String?>(null)
+    private var activeGenerationJob: Job? = null
+
+    init {
+        viewModelScope.launch {
+            val recovered = novelRepository.resetInterruptedScenes()
+            if (recovered > 0) {
+                appendEvent("Recovered $recovered interrupted scene drafts")
+            }
+        }
+    }
 
     private val novels = novelRepository.observeNovels()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -169,7 +183,7 @@ class NovelWorkspaceViewModel(
             selectedNovelId.value = novel.id
             selectedChapterId.value = null
             selectedSceneId.value = null
-            workflow.value = WorkflowState(events = listOf("Created ${novel.title}"))
+            workflow.value = WorkflowState(events = listOf(timestamped("Created ${novel.title}")))
         }
     }
 
@@ -474,7 +488,25 @@ class NovelWorkspaceViewModel(
     }
 
     fun generateSelectedScene() {
-        generateSelectedScene(reviewFeedback = null, retryCount = null, busyMessage = "Generating scene")
+        streamSelectedScene(busyMessage = "Streaming scene")
+    }
+
+    fun queueSelectedChapterScenes() {
+        queueSelectedScenes(fromSelectedScene = false)
+    }
+
+    fun queueScenesFromSelectedScene() {
+        queueSelectedScenes(fromSelectedScene = true)
+    }
+
+    fun cancelGeneration() {
+        val job = activeGenerationJob
+        if (job?.isActive != true) {
+            appendEvent("No active generation to cancel")
+            return
+        }
+        appendEvent("Cancellation requested")
+        job.cancel()
     }
 
     fun retrySelectedScene() {
@@ -532,43 +564,111 @@ class NovelWorkspaceViewModel(
         }
     }
 
-    private fun generateSelectedScene(reviewFeedback: String?, retryCount: Int?, busyMessage: String) {
+    private fun streamSelectedScene(busyMessage: String) {
         runPipelineStep(busyMessage) { novel, settings ->
             require(settings.apiKey.isNotBlank()) { "API key is required before generation" }
-            val chapters = novelRepository.getChapters(novel.id)
-            val currentChapterId = uiState.value.selectedChapter?.id
-            val chapter = chapters.firstOrNull { it.id == currentChapterId }
-                ?: chapters.firstOrNull { it.synopsis != null }
-                ?: error("Generate a chapter synopsis first")
-            val scenes = novelRepository.getScenes(chapter.id)
-            val currentSceneId = uiState.value.selectedScene?.id
-            val scene = scenes.firstOrNull { it.id == currentSceneId } ?: scenes.firstOrNull() ?: error("No scene shell exists")
-            val previousSceneEnding = scenes
-                .filter { it.order < scene.order && it.text.isNotBlank() }
-                .maxByOrNull { it.order }
-                ?.text
-                ?.split(Regex("\\s+"))
-                ?.takeLast(200)
-                ?.joinToString(" ")
-            val pipeline = pipelineFactory(settings)
-            var generatedText = scene.text
-            var generatedWordCount = scene.wordCount
-            var updatedBible = novel.bible
-            var reviewReport: ReviewReport? = null
+            val selectedChapter = uiState.value.selectedChapter ?: error("Select a chapter first")
+            val selectedScene = uiState.value.selectedScene ?: error("Select a scene first")
+            val chapter = novelRepository.getChapters(novel.id).firstOrNull { it.id == selectedChapter.id }
+                ?: error("Selected chapter no longer exists")
+            val scene = novelRepository.getScenes(chapter.id).firstOrNull { it.id == selectedScene.id }
+                ?: error("Selected scene no longer exists")
+            streamSceneAndFinalize(novel, chapter, scene, settings, snapshotExistingText = true)
+        }
+    }
 
-            if (scene.text.isNotBlank()) {
-                saveSnapshot(novel.id, SNAPSHOT_SCENE, scene.id, "Scene before generation", scene)
+    private fun queueSelectedScenes(fromSelectedScene: Boolean) {
+        val label = if (fromSelectedScene) "Queueing scenes from selection" else "Queueing selected chapter"
+        runPipelineStep(label) { novel, settings ->
+            require(settings.apiKey.isNotBlank()) { "API key is required before generation" }
+            val selectedChapter = uiState.value.selectedChapter ?: error("Select a chapter first")
+            val selectedScene = uiState.value.selectedScene
+            val chapter = novelRepository.getChapters(novel.id).firstOrNull { it.id == selectedChapter.id }
+                ?: error("Selected chapter no longer exists")
+            val scenes = novelRepository.getScenes(chapter.id)
+            val startOrder = if (fromSelectedScene) {
+                selectedScene?.order ?: error("Select a starting scene first")
+            } else {
+                Int.MIN_VALUE
             }
-            novelRepository.upsertScene(scene.copy(status = SceneStatus.GENERATING))
-            pipeline.generateScene(novel, chapter, scene, previousSceneEnding, reviewFeedback = reviewFeedback).collect { event ->
+            val queue = scenes
+                .filter { it.order >= startOrder }
+                .filter { it.text.isBlank() }
+                .sortedBy { it.order }
+            val skipped = scenes.count { it.order >= startOrder && it.text.isNotBlank() }
+            if (skipped > 0) {
+                appendEvent("Skipped $skipped scene(s) with existing prose")
+            }
+            if (queue.isEmpty()) {
+                appendEvent("No blank scenes to queue")
+                return@runPipelineStep
+            }
+
+            queue.forEachIndexed { index, queuedScene ->
+                workflow.update { it.copy(queuePosition = index + 1, queueTotal = queue.size) }
+                val currentNovel = novelRepository.getNovel(novel.id) ?: novel
+                val currentChapter = novelRepository.getChapters(novel.id).firstOrNull { it.id == chapter.id }
+                    ?: error("Queued chapter no longer exists")
+                val currentScene = novelRepository.getScenes(chapter.id).firstOrNull { it.id == queuedScene.id }
+                    ?: error("Queued scene no longer exists")
+                appendEvent("Queue ${index + 1}/${queue.size}: scene ${currentScene.order}")
+                streamSceneAndFinalize(currentNovel, currentChapter, currentScene, settings, snapshotExistingText = false)
+            }
+            workflow.update { it.copy(queuePosition = 0, queueTotal = 0) }
+            appendEvent("Scene queue complete")
+        }
+    }
+
+    private suspend fun streamSceneAndFinalize(
+        novel: Novel,
+        chapter: Chapter,
+        scene: Scene,
+        settings: GenerationSettings,
+        snapshotExistingText: Boolean,
+    ) {
+        require(chapter.synopsis != null) { "Generate a chapter synopsis first" }
+        val scenes = novelRepository.getScenes(chapter.id)
+        val previousSceneEnding = previousSceneEnding(scenes, scene)
+        val pipeline = pipelineFactory(settings)
+        val buffer = StringBuilder()
+        var persistedLength = 0
+        var updatedBible = novel.bible
+        var reviewReport: ReviewReport? = null
+
+        selectedChapterId.value = chapter.id
+        selectedSceneId.value = scene.id
+        if (snapshotExistingText && scene.text.isNotBlank()) {
+            saveSnapshot(novel.id, SNAPSHOT_SCENE, scene.id, "Scene before generation", scene)
+        }
+        novelRepository.upsertScene(scene.copy(status = SceneStatus.GENERATING))
+        workflow.update { it.copy(streamingSceneId = scene.id, streamingSceneText = "") }
+
+        try {
+            pipeline.streamSceneEvents(novel, chapter, scene, previousSceneEnding).collect { event ->
+                recordPipelineEvent(novel.id, settings, event)
+                if (event !is PipelineEvent.SceneTextDelta) return@collect
+                val delta = event.delta
+                if (delta.isEmpty()) return@collect
+                buffer.append(delta)
+                val streamedText = buffer.toString()
+                workflow.update { it.copy(streamingSceneId = scene.id, streamingSceneText = streamedText) }
+                if (streamedText.length - persistedLength >= STREAM_SAVE_MIN_CHARS) {
+                    persistStreamedScene(scene, streamedText, SceneStatus.GENERATING)
+                    persistedLength = streamedText.length
+                }
+            }
+
+            val generatedText = buffer.toString()
+            require(generatedText.isNotBlank()) { "Scene stream returned no text" }
+            val generatedWordCount = countWords(generatedText)
+            persistStreamedScene(scene, generatedText, SceneStatus.GENERATING)
+            recordPipelineEvent(novel.id, settings, PipelineEvent.SceneTextComplete(generatedText, generatedWordCount))
+
+            pipeline.finalizeSceneText(novel, chapter, scene, generatedText).collect { event ->
                 recordPipelineEvent(novel.id, settings, event)
                 when (event) {
-                    is PipelineEvent.SceneTextComplete -> {
-                        generatedText = event.text
-                        generatedWordCount = event.wordCount
-                    }
                     is PipelineEvent.BibleUpdated -> updatedBible = event.bible
-                    is PipelineEvent.ReviewComplete -> reviewReport = event.result.toReport(retryCount ?: 0)
+                    is PipelineEvent.ReviewComplete -> reviewReport = event.result.toReport(0)
                     else -> Unit
                 }
             }
@@ -584,9 +684,108 @@ class NovelWorkspaceViewModel(
                 ),
             )
             novelRepository.upsertNovel(novel.copy(bible = updatedBible, updatedAt = Clock.System.now()))
-            selectedChapterId.value = chapter.id
-            selectedSceneId.value = scene.id
-            appendEvent("Saved scene text and Bible updates")
+            appendEvent("Saved streamed scene text and Bible updates")
+        } catch (e: CancellationException) {
+            recoverStreamedScene(scene, buffer.toString())
+            appendEvent("Scene generation cancelled")
+            throw e
+        } catch (e: Exception) {
+            recoverStreamedScene(scene, buffer.toString())
+            throw e
+        } finally {
+            workflow.update { it.copy(streamingSceneId = null, streamingSceneText = null) }
+        }
+    }
+
+    private suspend fun persistStreamedScene(scene: Scene, text: String, status: SceneStatus) {
+        novelRepository.upsertScene(
+            scene.copy(
+                text = text,
+                wordCount = countWords(text),
+                reviewNotes = null,
+                reviewReport = null,
+                status = status,
+                textSource = SceneTextSource.GENERATED,
+            ),
+        )
+    }
+
+    private suspend fun recoverStreamedScene(scene: Scene, text: String) {
+        if (text.isBlank()) {
+            novelRepository.upsertScene(scene)
+            return
+        }
+        persistStreamedScene(scene, text, SceneStatus.GENERATED)
+        appendEvent("Partial scene draft saved")
+    }
+
+    private fun previousSceneEnding(scenes: List<Scene>, scene: Scene): String? {
+        return scenes
+            .filter { it.order < scene.order && it.text.isNotBlank() }
+            .maxByOrNull { it.order }
+            ?.text
+            ?.split(Regex("\\s+"))
+            ?.takeLast(200)
+            ?.joinToString(" ")
+    }
+
+    private fun generateSelectedScene(reviewFeedback: String?, retryCount: Int?, busyMessage: String) {
+        runPipelineStep(busyMessage) { novel, settings ->
+            require(settings.apiKey.isNotBlank()) { "API key is required before generation" }
+            val chapters = novelRepository.getChapters(novel.id)
+            val currentChapterId = uiState.value.selectedChapter?.id
+            val chapter = chapters.firstOrNull { it.id == currentChapterId }
+                ?: chapters.firstOrNull { it.synopsis != null }
+                ?: error("Generate a chapter synopsis first")
+            val scenes = novelRepository.getScenes(chapter.id)
+            val currentSceneId = uiState.value.selectedScene?.id
+            val scene = scenes.firstOrNull { it.id == currentSceneId } ?: scenes.firstOrNull() ?: error("No scene shell exists")
+            val previousSceneEnding = previousSceneEnding(scenes, scene)
+            val pipeline = pipelineFactory(settings)
+            var generatedText = scene.text
+            var generatedWordCount = scene.wordCount
+            var updatedBible = novel.bible
+            var reviewReport: ReviewReport? = null
+
+            if (scene.text.isNotBlank()) {
+                saveSnapshot(novel.id, SNAPSHOT_SCENE, scene.id, "Scene before generation", scene)
+            }
+            novelRepository.upsertScene(scene.copy(status = SceneStatus.GENERATING))
+            try {
+                pipeline.generateScene(novel, chapter, scene, previousSceneEnding, reviewFeedback = reviewFeedback).collect { event ->
+                    recordPipelineEvent(novel.id, settings, event)
+                    when (event) {
+                        is PipelineEvent.SceneTextComplete -> {
+                            generatedText = event.text
+                            generatedWordCount = event.wordCount
+                        }
+                        is PipelineEvent.BibleUpdated -> updatedBible = event.bible
+                        is PipelineEvent.ReviewComplete -> reviewReport = event.result.toReport(retryCount ?: 0)
+                        else -> Unit
+                    }
+                }
+
+                novelRepository.upsertScene(
+                    scene.copy(
+                        text = generatedText,
+                        wordCount = generatedWordCount,
+                        reviewNotes = reviewReport?.toNotes(),
+                        reviewReport = reviewReport,
+                        status = if (reviewReport?.passed == true) SceneStatus.REVIEWED else SceneStatus.GENERATED,
+                        textSource = SceneTextSource.GENERATED,
+                    ),
+                )
+                novelRepository.upsertNovel(novel.copy(bible = updatedBible, updatedAt = Clock.System.now()))
+                selectedChapterId.value = chapter.id
+                selectedSceneId.value = scene.id
+                appendEvent("Saved scene text and Bible updates")
+            } catch (e: CancellationException) {
+                novelRepository.upsertScene(scene)
+                throw e
+            } catch (e: Exception) {
+                novelRepository.upsertScene(scene)
+                throw e
+            }
         }
     }
 
@@ -632,16 +831,40 @@ class NovelWorkspaceViewModel(
             return
         }
         val settings = uiState.value.settings
-        viewModelScope.launch {
-            workflow.update { it.copy(isBusy = true, error = null, events = it.events + busyMessage) }
+        if (activeGenerationJob?.isActive == true) {
+            setError("Generation already running")
+            return
+        }
+        val job = viewModelScope.launch {
+            workflow.update {
+                it.copy(
+                    isBusy = true,
+                    error = null,
+                    queuePosition = 0,
+                    queueTotal = 0,
+                    events = (it.events + timestamped(busyMessage)).takeLast(12),
+                )
+            }
             try {
                 block(novel, settings)
+            } catch (e: CancellationException) {
+                appendEvent("Generation cancelled")
             } catch (e: Exception) {
                 setError(e.message ?: "Generation failed")
             } finally {
-                workflow.update { it.copy(isBusy = false) }
+                workflow.update {
+                    it.copy(
+                        isBusy = false,
+                        queuePosition = 0,
+                        queueTotal = 0,
+                        streamingSceneId = null,
+                        streamingSceneText = null,
+                    )
+                }
+                activeGenerationJob = null
             }
         }
+        activeGenerationJob = job
     }
 
     private suspend fun recordPipelineEvent(novelId: String, settings: GenerationSettings, event: PipelineEvent) {
@@ -733,15 +956,24 @@ class NovelWorkspaceViewModel(
     }
 
     private fun appendEvent(message: String) {
-        workflow.update { state -> state.copy(events = (state.events + message).takeLast(12)) }
+        workflow.update { state -> state.copy(events = (state.events + timestamped(message)).takeLast(12)) }
     }
 
     private fun setError(message: String) {
-        workflow.update { state -> state.copy(error = message, events = (state.events + "Error: $message").takeLast(12)) }
+        workflow.update { state -> state.copy(error = message, events = (state.events + timestamped("Error: $message")).takeLast(12)) }
+    }
+
+    private fun timestamped(message: String): String {
+        val time = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).time
+        val hour = time.hour.toString().padStart(2, '0')
+        val minute = time.minute.toString().padStart(2, '0')
+        val second = time.second.toString().padStart(2, '0')
+        return "$hour:$minute:$second $message"
     }
 
     companion object {
         const val MAX_REVIEW_RETRIES = 2
+        private const val STREAM_SAVE_MIN_CHARS = 240
         private const val SNAPSHOT_OUTLINE = "outline"
         private const val SNAPSHOT_CHAPTER_SYNOPSIS = "chapter_synopsis"
         private const val SNAPSHOT_SCENE = "scene"
@@ -1183,4 +1415,8 @@ data class WorkflowState(
     val isBusy: Boolean = false,
     val error: String? = null,
     val events: List<String> = emptyList(),
+    val streamingSceneId: String? = null,
+    val streamingSceneText: String? = null,
+    val queuePosition: Int = 0,
+    val queueTotal: Int = 0,
 )

@@ -113,21 +113,25 @@ Settings are stored with DataStore. API keys are currently local settings data; 
   - Restore/delete snapshot controls.
   - Token usage and estimated cost tracking by provider/model/agent.
   - Generated vs edited scene provenance in stats.
+- Streaming and generation queue:
+  - Scene prose streams into the Draft editor.
+  - Streaming saves incremental scene drafts during generation.
+  - User can cancel active generation without leaving `GENERATING` rows behind.
+  - Selected chapter queue and selected-scene-to-end queue generate only blank scenes.
+  - Interrupted `GENERATING` scenes are reset on app start.
+  - Run log events include timestamps.
 - `./gradlew build` passes.
 
 ### Partially Implemented
 
 - Scene continuity: previous scene ending is passed for selected scene generation, but broader chapter/novel continuity UX is thin.
 - Bible workflow: facts can be extracted, edited, previewed, and conflict-resolved; repository/UI tests are still missing.
-- Streaming: core pipeline exposes `streamScene`, but the Compose UI currently saves only completed scene text.
-- Error handling: errors are shown in the run log, but generation retry/resume behavior is not complete.
+- Error handling: errors are shown in the run log, but full retry/resume behavior across app process death is still thin.
 - Mobile UI: the workspace is functional, but still more tablet/workbench than polished phone UI.
 
 ### Not Yet Implemented
 
-- Generation queue for chapter/scene batches.
-- Real streaming prose UI.
-- Background generation and interruption recovery.
+- Background generation outside the active workspace lifecycle.
 - App UI tests and ViewModel tests.
 - Real-provider smoke test tooling.
 
@@ -242,18 +246,19 @@ Acceptance criteria:
 - User can correct wrong extracted facts.
 - Newer prose facts do not blindly erase important user-authored canon.
 - Agent context can be inspected before generation.
-### Phase 7: Streaming And Generation Queue
+
+### Phase 7: Streaming And Generation Queue - Done
 
 Goal: make long generation feel responsive and recoverable.
 
-Tasks:
+Done:
 
-1. Wire `streamScene` into Compose.
-2. Save incremental scene drafts safely.
-3. Add cancellation.
-4. Add queue for selected chapter or selected scene range.
+1. Wired `streamScene` into Compose.
+2. Saved incremental scene drafts safely during streaming.
+3. Added cancellation for active generation.
+4. Added queues for selected chapter and selected scene range.
 5. Reset interrupted `GENERATING` scenes to a recoverable state on app start.
-6. Record pipeline events with timestamps.
+6. Recorded run log pipeline events with timestamps.
 
 Acceptance criteria:
 
@@ -310,7 +315,7 @@ Acceptance criteria:
 | Review score too low | expose issues and allow retry/edit/accept | implemented |
 | Bible conflict | preserve user canon, flag conflict, let user resolve | implemented |
 | Large Bible | relevance scoring and token budget | implemented |
-| Interrupted generation | recover scene status on restart | incomplete |
+| Interrupted generation | recover scene status on restart | implemented |
 | Regeneration | do not destroy user edits without explicit confirmation | incomplete |
 | Missing API key | block generation with clear error | implemented |
 
@@ -344,6 +349,6 @@ Manual smoke path:
 
 ## Product Priorities
 
-The next highest-value work is Phase 5: review and retry. The editor now exists; the next risk is that weak generations still look finished instead of becoming actionable review states.
+The next highest-value work is Phase 9: tests and hardening. The major product workflow now exists; the next risk is regressions in state transitions, persistence, and UI behavior.
 
-Do not overbuild infrastructure before that. The real product risk is not whether the architecture is fancy enough. The risk is whether a writer can control the generated novel without fighting the app.
+Do not invent infrastructure for sport. Add deterministic tests around the real breakage points: ViewModel generation state, repository recovery, Compose smoke paths, and provider request formatting.

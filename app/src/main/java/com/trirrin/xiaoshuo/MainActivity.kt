@@ -109,6 +109,9 @@ class MainActivity : ComponentActivity() {
                     onGenerateOutline = viewModel::generateOutline,
                     onGenerateSynopsis = viewModel::generateSelectedSynopsis,
                     onGenerateScene = viewModel::generateSelectedScene,
+                    onQueueChapterScenes = viewModel::queueSelectedChapterScenes,
+                    onQueueScenesFromSelection = viewModel::queueScenesFromSelectedScene,
+                    onCancelGeneration = viewModel::cancelGeneration,
                     onSaveOutline = viewModel::saveOutlineDraft,
                     onSaveSynopsis = viewModel::saveChapterSynopsisDraft,
                     onSaveSceneText = viewModel::saveSceneText,
@@ -159,6 +162,9 @@ private fun XiaoShuoApp(
     onGenerateOutline: () -> Unit,
     onGenerateSynopsis: () -> Unit,
     onGenerateScene: () -> Unit,
+    onQueueChapterScenes: () -> Unit,
+    onQueueScenesFromSelection: () -> Unit,
+    onCancelGeneration: () -> Unit,
     onSaveOutline: (OutlineDraft) -> Unit,
     onSaveSynopsis: (ChapterSynopsisDraft) -> Unit,
     onSaveSceneText: (String) -> Unit,
@@ -182,7 +188,7 @@ private fun XiaoShuoApp(
             TopBar(state = state)
         },
         bottomBar = {
-            RunLog(workflow = state.workflow)
+            RunLog(workflow = state.workflow, onCancel = onCancelGeneration)
         },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
@@ -209,6 +215,8 @@ private fun XiaoShuoApp(
                     onSelectScene = onSelectScene,
                     onGenerateSynopsis = onGenerateSynopsis,
                     onGenerateScene = onGenerateScene,
+                    onQueueChapterScenes = onQueueChapterScenes,
+                    onQueueScenesFromSelection = onQueueScenesFromSelection,
                     onSaveSynopsis = onSaveSynopsis,
                     onSaveSceneText = onSaveSceneText,
                     onAcceptSynopsisReview = onAcceptSynopsisReview,
@@ -469,6 +477,8 @@ private fun DraftScreen(
     onSelectScene: (String) -> Unit,
     onGenerateSynopsis: () -> Unit,
     onGenerateScene: () -> Unit,
+    onQueueChapterScenes: () -> Unit,
+    onQueueScenesFromSelection: () -> Unit,
     onSaveSynopsis: (ChapterSynopsisDraft) -> Unit,
     onSaveSceneText: (String) -> Unit,
     onAcceptSynopsisReview: () -> Unit,
@@ -547,9 +557,24 @@ private fun DraftScreen(
                     Text("Generate")
                 }
             }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = onQueueChapterScenes,
+                    enabled = !state.workflow.isBusy && state.selectedChapter != null && state.scenes.any { it.text.isBlank() },
+                ) {
+                    Text("Queue Chapter")
+                }
+                OutlinedButton(
+                    onClick = onQueueScenesFromSelection,
+                    enabled = !state.workflow.isBusy && state.selectedScene != null && state.scenes.any { it.order >= (state.selectedScene?.order ?: Int.MAX_VALUE) && it.text.isBlank() },
+                ) {
+                    Text("Queue From Scene")
+                }
+            }
             SceneEditor(
                 scene = state.selectedScene,
                 isBusy = state.workflow.isBusy,
+                streamingText = state.workflow.streamingSceneText.takeIf { state.workflow.streamingSceneId == state.selectedScene?.id },
                 onSaveText = onSaveSceneText,
                 onAcceptReview = onAcceptSceneReview,
                 onRetry = onRetryScene,
@@ -709,6 +734,7 @@ private fun ChapterSynopsisEditor(
 private fun SceneEditor(
     scene: Scene?,
     isBusy: Boolean,
+    streamingText: String?,
     onSaveText: (String) -> Unit,
     onAcceptReview: () -> Unit,
     onRetry: () -> Unit,
@@ -719,7 +745,8 @@ private fun SceneEditor(
         EmptyText("Select a scene.")
         return
     }
-    var text by remember(scene.id, scene.text) { mutableStateOf(scene.text) }
+    var text by remember(scene.id, scene.text, streamingText) { mutableStateOf(streamingText ?: scene.text) }
+    val shownText = streamingText ?: text
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -736,17 +763,18 @@ private fun SceneEditor(
             onApprove = onApprove,
         )
         OutlinedTextField(
-            value = text,
-            onValueChange = { text = it },
+            value = shownText,
+            onValueChange = { if (streamingText == null) text = it },
             label = { Text("Scene prose") },
             minLines = 18,
+            readOnly = streamingText != null,
             modifier = Modifier.fillMaxWidth(),
         )
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Button(onClick = { onSaveText(text) }, enabled = !isBusy) {
+            Button(onClick = { onSaveText(shownText) }, enabled = !isBusy && streamingText == null) {
                 Text("Save Prose")
             }
-            Text("${countDraftWords(text)} words", style = MaterialTheme.typography.labelMedium)
+            Text("${countDraftWords(shownText)} words", style = MaterialTheme.typography.labelMedium)
         }
     }
 }
@@ -1358,7 +1386,7 @@ private fun MetricStrip(vararg metrics: Pair<String, String>) {
 }
 
 @Composable
-private fun RunLog(workflow: WorkflowState) {
+private fun RunLog(workflow: WorkflowState, onCancel: () -> Unit) {
     Surface(color = MaterialTheme.colorScheme.surface) {
         Row(
             modifier = Modifier
@@ -1367,7 +1395,8 @@ private fun RunLog(workflow: WorkflowState) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            val status = workflow.error ?: workflow.events.lastOrNull() ?: "Idle"
+            val queue = if (workflow.queueTotal > 0) " (${workflow.queuePosition}/${workflow.queueTotal})" else ""
+            val status = workflow.error ?: workflow.events.lastOrNull()?.plus(queue) ?: "Idle"
             Box(
                 modifier = Modifier
                     .size(8.dp)
@@ -1381,8 +1410,8 @@ private fun RunLog(workflow: WorkflowState) {
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            TextButton(onClick = {}) {
-                Text(if (workflow.isBusy) "Running" else "Ready")
+            TextButton(onClick = onCancel, enabled = workflow.isBusy) {
+                Text(if (workflow.isBusy) "Cancel" else "Ready")
             }
         }
     }

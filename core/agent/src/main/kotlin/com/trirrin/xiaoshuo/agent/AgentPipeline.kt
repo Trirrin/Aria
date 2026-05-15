@@ -11,6 +11,7 @@ import com.trirrin.xiaoshuo.prompt.SceneExpansionInput
 import com.trirrin.xiaoshuo.prompt.SceneExpansionPrompt
 import com.trirrin.xiaoshuo.prompt.ReviewType
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
 
 sealed class PipelineEvent {
@@ -165,8 +166,26 @@ class AgentPipeline(
             }
         }
 
-        val synopsis = chapter.synopsis ?: return@flow
-        val breakdown = synopsis.sceneBreakdowns.find { it.sceneIndex == scene.order } ?: return@flow
+        finishSceneText(novel, chapter, scene, text)
+    }
+
+    fun finalizeSceneText(
+        novel: Novel,
+        chapter: Chapter,
+        scene: Scene,
+        text: String,
+    ): Flow<PipelineEvent> = flow {
+        finishSceneText(novel, chapter, scene, text)
+    }
+
+    private suspend fun FlowCollector<PipelineEvent>.finishSceneText(
+        novel: Novel,
+        chapter: Chapter,
+        scene: Scene,
+        text: String,
+    ) {
+        val synopsis = chapter.synopsis ?: return
+        val breakdown = synopsis.sceneBreakdowns.find { it.sceneIndex == scene.order } ?: return
 
         emit(PipelineEvent.Step("review", "Reviewing scene against synopsis"))
         val reviewResult = reviewAgent.review(
@@ -178,9 +197,9 @@ class AgentPipeline(
             is AgentResult.ReviewResult -> {
                 emit(PipelineEvent.ReviewComplete(reviewResult))
                 reviewResult.usage?.let { emit(PipelineEvent.UsageRecorded(it)) }
-                if (!reviewResult.passed) return@flow
+                if (!reviewResult.passed) return
             }
-            else -> return@flow
+            else -> return
         }
 
         emit(PipelineEvent.Step("continuity", "Extracting facts for Bible update"))
@@ -193,7 +212,7 @@ class AgentPipeline(
         when (continuityResult) {
             is AgentResult.ContinuityResult -> {
                 val updatedBible = bibleMerger.merge(
-                    novel.bible, continuityResult.bibleDiff, chapter.id, scene.id
+                    novel.bible, continuityResult.bibleDiff, chapter.id, scene.id,
                 )
                 continuityResult.usage?.let { emit(PipelineEvent.UsageRecorded(it)) }
                 emit(PipelineEvent.BibleUpdated(updatedBible))
@@ -201,7 +220,7 @@ class AgentPipeline(
             is AgentResult.Error -> {
                 emit(PipelineEvent.Error("Continuity extraction failed: ${continuityResult.message}"))
             }
-            else -> {}
+            else -> Unit
         }
     }
 
@@ -300,6 +319,40 @@ class AgentPipeline(
             )
         } catch (e: Exception) {
             AgentResult.Error("LLM retry failed: ${e.message}", e)
+        }
+    }
+
+    suspend fun streamSceneEvents(
+        novel: Novel,
+        chapter: Chapter,
+        scene: Scene,
+        previousSceneEnding: String? = null,
+    ): Flow<PipelineEvent> = flow {
+        var inputTokens: Int? = null
+        var outputTokens: Int? = null
+        sceneExpansionAgent.streamChunks(
+            novel = novel,
+            chapter = chapter,
+            scene = scene,
+            previousSceneEnding = previousSceneEnding,
+        ).collect { chunk ->
+            if (chunk.delta.isNotEmpty()) {
+                emit(PipelineEvent.SceneTextDelta(chunk.delta))
+            }
+            inputTokens = chunk.inputTokens ?: inputTokens
+            outputTokens = chunk.outputTokens ?: outputTokens
+            if (chunk.isComplete && inputTokens != null && outputTokens != null) {
+                emit(
+                    PipelineEvent.UsageRecorded(
+                        AgentUsage(
+                            agentName = sceneExpansionAgent.name,
+                            model = sceneExpansionAgent.model,
+                            inputTokens = inputTokens ?: 0,
+                            outputTokens = outputTokens ?: 0,
+                        ),
+                    ),
+                )
+            }
         }
     }
 

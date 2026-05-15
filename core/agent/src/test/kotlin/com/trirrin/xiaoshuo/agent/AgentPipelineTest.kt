@@ -138,6 +138,126 @@ class AgentPipelineTest {
     }
 
     @Test
+    fun `pipeline streams scene deltas and records usage`() = runTest {
+        val llm = QueueLlmClient("Mira crossed the Ash Gate.")
+        val filter = BibleFilter(tokenBudget = 500)
+        val pipeline = AgentPipeline(
+            outlineAgent = OutlineAgent(llm, "creative-model"),
+            chapterSynopsisAgent = ChapterSynopsisAgent(llm, "creative-model", filter),
+            sceneExpansionAgent = SceneExpansionAgent(llm, "creative-model", filter),
+            reviewAgent = ReviewAgent(llm, "review-model"),
+            continuityAgent = ContinuityAgent(llm, "cheap-model"),
+            bibleMerger = BibleMerger(),
+        )
+        val novel = Novel(
+            title = "The Glass Map",
+            genre = Genre.FANTASY,
+            concept = "A courier steals a living map.",
+        )
+        val chapter = Chapter(
+            novelId = novel.id,
+            order = 1,
+            synopsis = ChapterSynopsis(
+                chapterGoal = "Mira escapes the city.",
+                sceneBreakdowns = listOf(
+                    SceneBreakdown(
+                        sceneIndex = 1,
+                        synopsis = "Mira crosses the Ash Gate with the living map.",
+                        targetWordCount = 50,
+                    ),
+                ),
+                chapterEnding = "Mira reaches the road.",
+            ),
+        )
+        val scene = Scene(
+            chapterId = chapter.id,
+            novelId = novel.id,
+            order = 1,
+        )
+
+        val events = pipeline.streamSceneEvents(novel, chapter, scene).toList()
+
+        assertEquals("Mira crossed the Ash Gate.", events.filterIsInstance<PipelineEvent.SceneTextDelta>().single().delta)
+        val usage = events.filterIsInstance<PipelineEvent.UsageRecorded>().single().usage
+        assertEquals("scene_expansion", usage.agentName)
+        assertEquals("creative-model", usage.model)
+        assertEquals(10, usage.inputTokens)
+        assertEquals(20, usage.outputTokens)
+    }
+
+    @Test
+    fun `pipeline finalizes streamed scene without regenerating prose`() = runTest {
+        val llm = QueueLlmClient(
+            """
+            {
+              "complianceScore": 9,
+              "issues": [],
+              "suggestedFixes": [],
+              "passed": true
+            }
+            """.trimIndent(),
+            """
+            {
+              "charactersToAdd": [
+                {"name": "Mira", "description": "A courier", "personality": "stubborn", "currentState": "safe", "relationships": []}
+              ],
+              "charactersToUpdate": [],
+              "locationsToAdd": [],
+              "timelineEventsToAdd": [
+                {"description": "Mira reached the road after crossing the Ash Gate."}
+              ],
+              "worldRulesToAdd": []
+            }
+            """.trimIndent(),
+        )
+        val filter = BibleFilter(tokenBudget = 500)
+        val pipeline = AgentPipeline(
+            outlineAgent = OutlineAgent(llm, "creative-model"),
+            chapterSynopsisAgent = ChapterSynopsisAgent(llm, "creative-model", filter),
+            sceneExpansionAgent = SceneExpansionAgent(llm, "creative-model", filter),
+            reviewAgent = ReviewAgent(llm, "review-model"),
+            continuityAgent = ContinuityAgent(llm, "cheap-model"),
+            bibleMerger = BibleMerger(),
+        )
+        val novel = Novel(
+            title = "The Glass Map",
+            genre = Genre.FANTASY,
+            concept = "A courier steals a living map.",
+        )
+        val chapter = Chapter(
+            novelId = novel.id,
+            order = 1,
+            synopsis = ChapterSynopsis(
+                chapterGoal = "Mira escapes the city.",
+                sceneBreakdowns = listOf(
+                    SceneBreakdown(
+                        sceneIndex = 1,
+                        synopsis = "Mira crosses the Ash Gate with the living map.",
+                        targetWordCount = 50,
+                    ),
+                ),
+                chapterEnding = "Mira reaches the road.",
+            ),
+        )
+        val scene = Scene(
+            chapterId = chapter.id,
+            novelId = novel.id,
+            order = 1,
+        )
+
+        val events = pipeline.finalizeSceneText(
+            novel = novel,
+            chapter = chapter,
+            scene = scene,
+            text = "Mira crossed the Ash Gate and reached the road.",
+        ).toList()
+
+        assertTrue(events.filterIsInstance<PipelineEvent.ReviewComplete>().single().result.passed)
+        assertEquals("Mira", events.filterIsInstance<PipelineEvent.BibleUpdated>().single().bible.characters.single().name)
+        assertEquals(listOf("review-model", "cheap-model"), llm.requests.map { it.model })
+    }
+
+    @Test
     fun `pipeline does not update bible when scene review fails`() = runTest {
         val llm = QueueLlmClient(
             "Mira talks about leaving but never reaches the Ash Gate.",
@@ -212,6 +332,13 @@ private class QueueLlmClient(vararg responses: String) : LlmClient {
 
     override fun stream(request: LlmRequest): Flow<LlmChunk> {
         requests.add(request)
-        return flowOf(LlmChunk(delta = queuedResponses.removeFirst(), isComplete = true))
+        return flowOf(
+            LlmChunk(
+                delta = queuedResponses.removeFirst(),
+                inputTokens = 10,
+                outputTokens = 20,
+                isComplete = true,
+            ),
+        )
     }
 }

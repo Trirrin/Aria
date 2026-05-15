@@ -44,6 +44,9 @@ interface NovelDao {
     @Upsert
     suspend fun upsertScene(scene: SceneEntity)
 
+    @Query("UPDATE scenes SET status = CASE WHEN text = '' THEN 'PENDING' ELSE 'GENERATED' END WHERE status = 'GENERATING'")
+    suspend fun resetGeneratingScenes(): Int
+
     @Query("SELECT * FROM revision_snapshots WHERE novelId = :novelId ORDER BY createdAtEpochMillis DESC")
     fun observeRevisionSnapshots(novelId: String): Flow<List<RevisionSnapshotEntity>>
 

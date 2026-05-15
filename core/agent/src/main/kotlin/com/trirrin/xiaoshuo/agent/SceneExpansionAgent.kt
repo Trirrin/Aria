@@ -77,6 +77,15 @@ class SceneExpansionAgent(
         scene: Scene,
         previousSceneEnding: String? = null,
     ): Flow<String> {
+        return streamChunks(novel, chapter, scene, previousSceneEnding).map { it.delta }
+    }
+
+    suspend fun streamChunks(
+        novel: Novel,
+        chapter: Chapter,
+        scene: Scene,
+        previousSceneEnding: String? = null,
+    ): Flow<LlmChunk> {
         val synopsis = chapter.synopsis ?: throw IllegalStateException("Chapter has no synopsis")
         val breakdown = synopsis.sceneBreakdowns.find { it.sceneIndex == scene.order }
             ?: throw IllegalStateException("No breakdown for scene ${scene.order}")
@@ -105,7 +114,7 @@ class SceneExpansionAgent(
             temperature = 0.85,
         )
 
-        return llmClient.stream(request).map { it.delta }
+        return llmClient.stream(request)
     }
 
     private fun extractNames(text: String): List<String> {
