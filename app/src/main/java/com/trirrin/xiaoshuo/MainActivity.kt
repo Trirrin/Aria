@@ -210,40 +210,46 @@ private fun XiaoShuoApp(
                     )
                 }
             }
-            when (WorkspaceTab.entries[selectedTab]) {
-                WorkspaceTab.Library -> LibraryScreen(state, onCreateNovel, onSelectNovel)
-                WorkspaceTab.Outline -> OutlineScreen(state, onGenerateOutline, onSaveOutline)
-                WorkspaceTab.Draft -> DraftScreen(
-                    state = state,
-                    onSelectChapter = onSelectChapter,
-                    onSelectScene = onSelectScene,
-                    onGenerateSynopsis = onGenerateSynopsis,
-                    onGenerateScene = onGenerateScene,
-                    onQueueChapterScenes = onQueueChapterScenes,
-                    onQueueScenesFromSelection = onQueueScenesFromSelection,
-                    onSaveSynopsis = onSaveSynopsis,
-                    onSaveSceneText = onSaveSceneText,
-                    onAcceptSynopsisReview = onAcceptSynopsisReview,
-                    onRetrySynopsis = onRetrySynopsis,
-                    onManualEditSynopsis = onManualEditSynopsis,
-                    onApproveSynopsis = onApproveSynopsis,
-                    onAcceptSceneReview = onAcceptSceneReview,
-                    onRetryScene = onRetryScene,
-                    onManualEditScene = onManualEditScene,
-                    onApproveScene = onApproveScene,
-                )
-                WorkspaceTab.Bible -> BibleScreen(
-                    state = state,
-                    onSaveEntry = onSaveBibleEntry,
-                    onDeleteEntry = onDeleteBibleEntry,
-                    onResolveConflict = onResolveBibleConflict,
-                )
-                WorkspaceTab.History -> HistoryScreen(
-                    state = state,
-                    onRestoreSnapshot = onRestoreSnapshot,
-                    onDeleteSnapshot = onDeleteSnapshot,
-                )
-                WorkspaceTab.Settings -> SettingsScreen(state.settings, onSaveSettings)
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth(),
+            ) {
+                when (WorkspaceTab.entries[selectedTab]) {
+                    WorkspaceTab.Library -> LibraryScreen(state, onCreateNovel, onSelectNovel)
+                    WorkspaceTab.Outline -> OutlineScreen(state, onGenerateOutline, onSaveOutline)
+                    WorkspaceTab.Draft -> DraftScreen(
+                        state = state,
+                        onSelectChapter = onSelectChapter,
+                        onSelectScene = onSelectScene,
+                        onGenerateSynopsis = onGenerateSynopsis,
+                        onGenerateScene = onGenerateScene,
+                        onQueueChapterScenes = onQueueChapterScenes,
+                        onQueueScenesFromSelection = onQueueScenesFromSelection,
+                        onSaveSynopsis = onSaveSynopsis,
+                        onSaveSceneText = onSaveSceneText,
+                        onAcceptSynopsisReview = onAcceptSynopsisReview,
+                        onRetrySynopsis = onRetrySynopsis,
+                        onManualEditSynopsis = onManualEditSynopsis,
+                        onApproveSynopsis = onApproveSynopsis,
+                        onAcceptSceneReview = onAcceptSceneReview,
+                        onRetryScene = onRetryScene,
+                        onManualEditScene = onManualEditScene,
+                        onApproveScene = onApproveScene,
+                    )
+                    WorkspaceTab.Bible -> BibleScreen(
+                        state = state,
+                        onSaveEntry = onSaveBibleEntry,
+                        onDeleteEntry = onDeleteBibleEntry,
+                        onResolveConflict = onResolveBibleConflict,
+                    )
+                    WorkspaceTab.History -> HistoryScreen(
+                        state = state,
+                        onRestoreSnapshot = onRestoreSnapshot,
+                        onDeleteSnapshot = onDeleteSnapshot,
+                    )
+                    WorkspaceTab.Settings -> SettingsScreen(state.settings, onSaveSettings)
+                }
             }
         }
     }
@@ -352,7 +358,12 @@ private fun LibraryScreen(
                 if (state.novels.isEmpty()) {
                     EmptyText(stringResource(R.string.empty_no_novels))
                 } else {
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LazyColumn(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         items(state.novels, key = { it.id }) { novel ->
                             NovelRow(
                                 novel = novel,
@@ -365,7 +376,7 @@ private fun LibraryScreen(
             }
         }
         val newNovelForm: @Composable (Modifier) -> Unit = { modifier ->
-            SurfacePanel(modifier = modifier) {
+            SurfacePanel(modifier = modifier.verticalScroll(rememberScrollState())) {
                 CreateNovelForm(onCreateNovel)
             }
         }
@@ -471,7 +482,7 @@ private fun OutlineScreen(
     ) {
         val compact = maxWidth < 840.dp
         val projectPanel: @Composable (Modifier) -> Unit = { modifier ->
-            SurfacePanel(modifier = modifier) {
+            SurfacePanel(modifier = modifier.verticalScroll(rememberScrollState())) {
                 Text(stringResource(R.string.section_project), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 if (novel == null) {
                     EmptyText(stringResource(R.string.empty_select_novel_first))
@@ -546,7 +557,12 @@ private fun DraftScreen(
                 if (state.chapters.isEmpty()) {
                     EmptyText(stringResource(R.string.empty_generate_outline_first))
                 } else {
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    LazyColumn(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
                         items(state.chapters, key = { it.id }) { chapter ->
                             SelectableRow(
                                 title = "${chapter.order}. ${chapter.title}",
@@ -570,20 +586,26 @@ private fun DraftScreen(
                         Text(stringResource(R.string.action_synopsis))
                     }
                 }
-                ChapterSynopsisEditor(
-                    chapter = state.selectedChapter,
-                    isBusy = state.workflow.isBusy,
-                    onSave = onSaveSynopsis,
-                    onAcceptReview = onAcceptSynopsisReview,
-                    onRetry = onRetrySynopsis,
-                    onManualEdit = onManualEditSynopsis,
-                    onApprove = onApproveSynopsis,
-                )
-                if (state.scenes.isEmpty()) {
-                    EmptyText(stringResource(R.string.empty_no_scene_breakdowns))
-                } else {
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(state.scenes, key = { it.id }) { scene ->
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    ChapterSynopsisEditor(
+                        chapter = state.selectedChapter,
+                        isBusy = state.workflow.isBusy,
+                        onSave = onSaveSynopsis,
+                        onAcceptReview = onAcceptSynopsisReview,
+                        onRetry = onRetrySynopsis,
+                        onManualEdit = onManualEditSynopsis,
+                        onApprove = onApproveSynopsis,
+                    )
+                    if (state.scenes.isEmpty()) {
+                        EmptyText(stringResource(R.string.empty_no_scene_breakdowns))
+                    } else {
+                        state.scenes.forEach { scene ->
                             SelectableRow(
                                 title = stringResource(R.string.scene_number, scene.order),
                                 subtitle = sceneListSubtitle(scene),
@@ -629,6 +651,9 @@ private fun DraftScreen(
                     onRetry = onRetryScene,
                     onManualEdit = onManualEditScene,
                     onApprove = onApproveScene,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
                 )
             }
         }
@@ -804,6 +829,7 @@ private fun SceneEditor(
     onRetry: () -> Unit,
     onManualEdit: () -> Unit,
     onApprove: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     if (scene == null) {
         EmptyText(stringResource(R.string.empty_select_scene))
@@ -812,7 +838,7 @@ private fun SceneEditor(
     var text by remember(scene.id, scene.text, streamingText) { mutableStateOf(streamingText ?: scene.text) }
     val shownText = streamingText ?: text
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -834,7 +860,7 @@ private fun SceneEditor(
             readOnly = streamingText != null,
             modifier = Modifier.fillMaxWidth(),
         )
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { onSaveText(shownText) }, enabled = !isBusy && streamingText == null) {
                 Text(stringResource(R.string.action_save_prose))
             }
@@ -985,13 +1011,13 @@ private fun BibleEntryRow(entry: BibleEntrySummary, selected: Boolean, onEdit: (
             .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(entry.title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                Text(entry.source, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(entry.title, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+            Text(entry.source, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = onEdit) { Text(stringResource(R.string.action_edit)) }
+                TextButton(onClick = onDelete) { Text(stringResource(R.string.action_delete)) }
             }
-            TextButton(onClick = onEdit) { Text(stringResource(R.string.action_edit)) }
-            TextButton(onClick = onDelete) { Text(stringResource(R.string.action_delete)) }
         }
         Text(entry.detail.ifBlank { stringResource(R.string.none) }, style = MaterialTheme.typography.bodySmall)
         if (entry.extra.isNotBlank()) {
@@ -1131,11 +1157,9 @@ private fun RevisionSnapshotRow(
             .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(snapshot.label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
-                Text("${snapshot.targetType} / ${snapshot.createdAt}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.64f))
-            }
+        Text(snapshot.label, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+        Text("${snapshot.targetType} / ${snapshot.createdAt}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.64f))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             TextButton(onClick = onRestore, enabled = !isBusy) { Text(stringResource(R.string.action_restore)) }
             TextButton(onClick = onDelete, enabled = !isBusy) { Text(stringResource(R.string.action_delete)) }
         }
@@ -1171,7 +1195,8 @@ private fun SettingsScreen(settings: GenerationSettings, onSave: (GenerationSett
     SurfacePanel(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState()),
     ) {
         SettingsForm(settings, onSave)
     }
@@ -1194,21 +1219,21 @@ private fun SettingsForm(settings: GenerationSettings, onSave: (GenerationSettin
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        ProviderMenu(provider, onChange = { provider = it }, modifier = Modifier.widthIn(min = 180.dp, max = 320.dp))
+        ProviderMenu(provider, onChange = { provider = it }, modifier = Modifier.weight(1f).widthIn(min = 180.dp, max = 320.dp))
         OutlinedTextField(
             value = apiKey,
             onValueChange = { apiKey = it },
             label = { Text(stringResource(R.string.field_api_key)) },
             singleLine = true,
             visualTransformation = if (apiKey.isBlank()) VisualTransformation.None else PasswordVisualTransformation(),
-            modifier = Modifier.widthIn(min = 240.dp, max = 420.dp),
+            modifier = Modifier.weight(1f).widthIn(min = 220.dp, max = 420.dp),
         )
         OutlinedTextField(
             value = baseUrl,
             onValueChange = { baseUrl = it },
             label = { Text(stringResource(R.string.field_base_url)) },
             singleLine = true,
-            modifier = Modifier.widthIn(min = 240.dp, max = 420.dp),
+            modifier = Modifier.weight(1f).widthIn(min = 220.dp, max = 420.dp),
         )
     }
     FlowRow(
@@ -1216,11 +1241,11 @@ private fun SettingsForm(settings: GenerationSettings, onSave: (GenerationSettin
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        ModelField(stringResource(R.string.field_outline_model), outlineModel, { outlineModel = it })
-        ModelField(stringResource(R.string.field_synopsis_model), synopsisModel, { synopsisModel = it })
-        ModelField(stringResource(R.string.field_text_model), textModel, { textModel = it })
-        ModelField(stringResource(R.string.field_review_model), reviewModel, { reviewModel = it })
-        ModelField(stringResource(R.string.field_continuity_model), continuityModel, { continuityModel = it })
+        ModelField(stringResource(R.string.field_outline_model), outlineModel, { outlineModel = it }, Modifier.weight(1f))
+        ModelField(stringResource(R.string.field_synopsis_model), synopsisModel, { synopsisModel = it }, Modifier.weight(1f))
+        ModelField(stringResource(R.string.field_text_model), textModel, { textModel = it }, Modifier.weight(1f))
+        ModelField(stringResource(R.string.field_review_model), reviewModel, { reviewModel = it }, Modifier.weight(1f))
+        ModelField(stringResource(R.string.field_continuity_model), continuityModel, { continuityModel = it }, Modifier.weight(1f))
     }
     Button(
         onClick = {
@@ -1298,13 +1323,13 @@ private fun GenreMenu(genre: Genre, onChange: (Genre) -> Unit, modifier: Modifie
 }
 
 @Composable
-private fun ModelField(label: String, value: String, onChange: (String) -> Unit) {
+private fun ModelField(label: String, value: String, onChange: (String) -> Unit, modifier: Modifier = Modifier) {
     OutlinedTextField(
         value = value,
         onValueChange = onChange,
         label = { Text(label) },
         singleLine = true,
-        modifier = Modifier.widthIn(min = 220.dp, max = 360.dp),
+        modifier = modifier.widthIn(min = 220.dp, max = 360.dp),
     )
 }
 
