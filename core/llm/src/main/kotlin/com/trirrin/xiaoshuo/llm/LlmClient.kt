@@ -1,6 +1,7 @@
 package com.trirrin.xiaoshuo.llm
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.serialization.json.JsonObject
 
 interface LlmClient {
     val provider: LlmProvider
@@ -20,6 +21,8 @@ data class LlmRequest(
     val temperature: Double = 0.7,
     val stopSequences: List<String> = emptyList(),
     val cacheableSystemPrompt: Boolean = false,
+    val tools: List<LlmTool> = emptyList(),
+    val toolChoice: LlmToolChoice = LlmToolChoice.Auto,
 )
 
 data class LlmMessage(
@@ -29,12 +32,40 @@ data class LlmMessage(
 
 enum class MessageRole { SYSTEM, USER, ASSISTANT }
 
+data class LlmTool(
+    val name: String,
+    val description: String,
+    val inputSchema: JsonObject,
+    val strict: Boolean = false,
+)
+
+sealed interface LlmToolChoice {
+    data object Auto : LlmToolChoice
+    data object Required : LlmToolChoice
+    data object None : LlmToolChoice
+    data class Named(val name: String) : LlmToolChoice
+}
+
+data class LlmToolCall(
+    val id: String,
+    val name: String,
+    val argumentsJson: String,
+)
+
+data class LlmToolCallDelta(
+    val id: String? = null,
+    val name: String? = null,
+    val argumentsDelta: String = "",
+    val index: Int? = null,
+)
+
 data class LlmResponse(
     val content: String,
     val inputTokens: Int,
     val outputTokens: Int,
     val finishReason: String?,
     val model: String,
+    val toolCalls: List<LlmToolCall> = emptyList(),
 )
 
 data class LlmChunk(
@@ -42,6 +73,7 @@ data class LlmChunk(
     val inputTokens: Int? = null,
     val outputTokens: Int? = null,
     val isComplete: Boolean = false,
+    val toolCallDelta: LlmToolCallDelta? = null,
 )
 
 sealed class LlmError(message: String, cause: Throwable? = null) : Exception(message, cause) {

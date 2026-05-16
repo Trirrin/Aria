@@ -87,12 +87,7 @@ import java.io.File
 import java.util.Locale
 
 private enum class WorkspaceTab(val labelRes: Int) {
-    Library(R.string.tab_library),
-    Overview(R.string.tab_overview),
-    Outline(R.string.tab_outline),
-    Draft(R.string.tab_draft),
-    Bible(R.string.tab_bible),
-    History(R.string.tab_history),
+    Conversation(R.string.tab_conversation),
     Settings(R.string.tab_settings),
 }
 
@@ -138,6 +133,10 @@ class MainActivity : ComponentActivity() {
                     onDeleteSnapshot = viewModel::deleteRevisionSnapshot,
                     onConfirmOverwrite = viewModel::confirmOverwrite,
                     onCancelOverwrite = viewModel::cancelOverwrite,
+                    onSubmitConversationMessage = viewModel::submitConversationMessage,
+                    onAcceptApproval = viewModel::acceptPendingApproval,
+                    onRejectApproval = viewModel::rejectPendingApproval,
+                    onReviseApproval = viewModel::revisePendingApproval,
                 )
             }
         }
@@ -147,6 +146,10 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun XiaoShuoApp(
     state: NovelWorkspaceUiState,
+    onSubmitConversationMessage: (String) -> Unit,
+    onAcceptApproval: () -> Unit,
+    onRejectApproval: () -> Unit,
+    onReviseApproval: (String) -> Unit,
     onCreateNovel: (String, String, Genre, String) -> Unit,
     onImportFromChat: (String) -> Unit,
     onSelectNovel: (String) -> Unit,
@@ -219,38 +222,12 @@ private fun XiaoShuoApp(
                     .fillMaxWidth(),
             ) {
                 when (WorkspaceTab.entries[selectedTab]) {
-                    WorkspaceTab.Library -> LibraryScreen(state, onCreateNovel, onImportFromChat, onSelectNovel)
-                    WorkspaceTab.Overview -> OverviewScreen(state)
-                    WorkspaceTab.Outline -> OutlineScreen(state, onGenerateOutline, onSaveOutline)
-                    WorkspaceTab.Draft -> DraftScreen(
+                    WorkspaceTab.Conversation -> ConversationScreen(
                         state = state,
-                        onSelectChapter = onSelectChapter,
-                        onSelectScene = onSelectScene,
-                        onGenerateSynopsis = onGenerateSynopsis,
-                        onGenerateScene = onGenerateScene,
-                        onQueueChapterScenes = onQueueChapterScenes,
-                        onQueueScenesFromSelection = onQueueScenesFromSelection,
-                        onSaveSynopsis = onSaveSynopsis,
-                        onSaveSceneText = onSaveSceneText,
-                        onAcceptSynopsisReview = onAcceptSynopsisReview,
-                        onRetrySynopsis = onRetrySynopsis,
-                        onManualEditSynopsis = onManualEditSynopsis,
-                        onApproveSynopsis = onApproveSynopsis,
-                        onAcceptSceneReview = onAcceptSceneReview,
-                        onRetryScene = onRetryScene,
-                        onManualEditScene = onManualEditScene,
-                        onApproveScene = onApproveScene,
-                    )
-                    WorkspaceTab.Bible -> BibleScreen(
-                        state = state,
-                        onSaveEntry = onSaveBibleEntry,
-                        onDeleteEntry = onDeleteBibleEntry,
-                        onResolveConflict = onResolveBibleConflict,
-                    )
-                    WorkspaceTab.History -> HistoryScreen(
-                        state = state,
-                        onRestoreSnapshot = onRestoreSnapshot,
-                        onDeleteSnapshot = onDeleteSnapshot,
+                        onSubmitMessage = onSubmitConversationMessage,
+                        onAcceptApproval = onAcceptApproval,
+                        onRejectApproval = onRejectApproval,
+                        onReviseApproval = onReviseApproval,
                     )
                     WorkspaceTab.Settings -> SettingsScreen(state.settings, onSaveSettings)
                 }
@@ -298,6 +275,174 @@ private fun TopBar(state: NovelWorkspaceUiState) {
         }
     }
 }
+
+@Composable
+private fun ConversationScreen(
+    state: NovelWorkspaceUiState,
+    onSubmitMessage: (String) -> Unit,
+    onAcceptApproval: () -> Unit,
+    onRejectApproval: () -> Unit,
+    onReviseApproval: (String) -> Unit,
+) {
+    var input by remember { mutableStateOf("") }
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(12.dp),
+    ) {
+        val compact = maxWidth < 860.dp
+        val transcript: @Composable (Modifier) -> Unit = { modifier ->
+            SurfacePanel(modifier = modifier) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Conversation", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    state.selectedNovel?.let { Text(it.title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary) }
+                }
+                LazyColumn(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(state.conversation.messages) { message ->
+                        ConversationMessageRow(message)
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = input,
+                        onValueChange = { input = it },
+                        label = { Text("Describe what you want to write") },
+                        minLines = 2,
+                        maxLines = 4,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Button(
+                        onClick = {
+                            onSubmitMessage(input)
+                            input = ""
+                        },
+                        enabled = !state.workflow.isBusy && input.isNotBlank(),
+                    ) { Text("Send") }
+                }
+            }
+        }
+        val approval: @Composable (Modifier) -> Unit = { modifier ->
+            SurfacePanel(modifier = modifier) {
+                PendingApprovalPanel(
+                    approval = state.conversation.pendingApproval,
+                    isBusy = state.workflow.isBusy,
+                    onAccept = onAcceptApproval,
+                    onReject = onRejectApproval,
+                    onRevise = onReviseApproval,
+                )
+            }
+        }
+
+        if (compact) {
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                transcript(Modifier.weight(1f).fillMaxWidth())
+                approval(Modifier.fillMaxWidth())
+            }
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxSize()) {
+                transcript(Modifier.weight(1f).fillMaxHeight())
+                approval(Modifier.weight(1f).fillMaxHeight())
+            }
+        }
+    }
+}
+
+@Composable
+private fun ConversationMessageRow(message: ConversationMessage) {
+    val isUser = message.role == ConversationRole.USER
+    val container = if (isUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh
+    val content = if (isUser) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+    ) {
+        Surface(
+            modifier = Modifier.widthIn(max = 620.dp),
+            shape = MaterialTheme.shapes.medium,
+            color = container,
+        ) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(if (isUser) "You" else "Assistant", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = content)
+                Text(message.text, style = MaterialTheme.typography.bodyMedium, color = content)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PendingApprovalPanel(
+    approval: PendingApproval?,
+    isBusy: Boolean,
+    onAccept: () -> Unit,
+    onReject: () -> Unit,
+    onRevise: (String) -> Unit,
+) {
+    var revisionFeedback by remember(approval?.id) { mutableStateOf("") }
+    Text("Artifact Preview", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+    if (approval == null) {
+        EmptyText("No pending proposal. Generated artifacts will appear here before they are saved.")
+        return
+    }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(approval.previewTitle, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(
+                "${approval.targetType.displayLabel} | ${approval.riskLevel.displayLabel}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        StatusPill(if (approval.requiredBeforeCommit) "Approval required" else "Optional")
+    }
+    OutlinedTextField(
+        value = approval.previewText,
+        onValueChange = {},
+        readOnly = true,
+        minLines = 12,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(onClick = onAccept, enabled = !isBusy) { Text("Accept") }
+        OutlinedButton(onClick = onReject, enabled = !isBusy) { Text("Reject") }
+    }
+    OutlinedTextField(
+        value = revisionFeedback,
+        onValueChange = { revisionFeedback = it },
+        label = { Text("Revision request") },
+        minLines = 3,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedButton(
+        onClick = {
+            onRevise(revisionFeedback)
+            revisionFeedback = ""
+        },
+        enabled = !isBusy && revisionFeedback.isNotBlank(),
+    ) { Text("Revise") }
+}
+
+private val ApprovalTargetType.displayLabel: String
+    get() = when (this) {
+        ApprovalTargetType.NOVEL_BACKGROUND -> "Background"
+        ApprovalTargetType.OUTLINE -> "Outline"
+        ApprovalTargetType.OUTLINE_STRUCTURE_CHANGE -> "Outline structure change"
+    }
+
+private val ApprovalRiskLevel.displayLabel: String
+    get() = when (this) {
+        ApprovalRiskLevel.LOW -> "Low risk"
+        ApprovalRiskLevel.MEDIUM -> "Medium risk"
+        ApprovalRiskLevel.HIGH -> "High risk"
+    }
 
 @Composable
 private fun OverviewScreen(state: NovelWorkspaceUiState) {

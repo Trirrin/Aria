@@ -6,6 +6,7 @@
     <string name="status_idle">Idle</string>
     <string name="status_ready">Ready</string>
 
+    <string name="tab_conversation">Conversation</string>
     <string name="tab_library">Library</string>
     <string name="tab_overview">Overview</string>
     <string name="tab_outline">Outline</string>

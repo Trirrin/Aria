@@ -6,7 +6,9 @@
     <string name="status_idle">空闲</string>
     <string name="status_ready">就绪</string>
 
+    <string name="tab_conversation">对话</string>
     <string name="tab_library">书库</string>
+    <string name="tab_overview">总览</string>
     <string name="tab_outline">大纲</string>
     <string name="tab_draft">草稿</string>
     <string name="tab_bible">设定集</string>
@@ -16,6 +18,7 @@
     <string name="section_novels">小说</string>
     <string name="section_new_novel">新建小说</string>
     <string name="section_import_from_chat">从聊天导入</string>
+    <string name="section_project_overview">项目总览</string>
     <string name="section_project">项目</string>
     <string name="section_outline">大纲</string>
     <string name="section_chapters">章节</string>

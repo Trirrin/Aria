@@ -2,9 +2,11 @@ package com.trirrin.xiaoshuo
 
 import android.app.Application
 import com.trirrin.xiaoshuo.agent.AgentPipeline
+import com.trirrin.xiaoshuo.agent.BackgroundAgent
 import com.trirrin.xiaoshuo.agent.BibleFilter
 import com.trirrin.xiaoshuo.agent.BibleMerger
 import com.trirrin.xiaoshuo.agent.ChapterSynopsisAgent
+import com.trirrin.xiaoshuo.agent.ConversationAgent
 import com.trirrin.xiaoshuo.agent.ContinuityAgent
 import com.trirrin.xiaoshuo.agent.PipelineConfig
 import com.trirrin.xiaoshuo.agent.OutlineAgent
@@ -46,6 +48,8 @@ class AppContainer(application: Application) {
         )
         val bibleFilter = BibleFilter()
         return AgentPipeline(
+            backgroundAgent = BackgroundAgent(llmClient, settings.outlineModel),
+            conversationAgent = ConversationAgent(llmClient, settings.outlineModel),
             outlineAgent = OutlineAgent(llmClient, settings.outlineModel),
             chapterSynopsisAgent = ChapterSynopsisAgent(llmClient, settings.synopsisModel, bibleFilter),
             sceneExpansionAgent = SceneExpansionAgent(llmClient, settings.textModel, bibleFilter),

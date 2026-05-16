@@ -36,6 +36,8 @@ internal fun LlmResponse.toAgentUsage(agentName: String, fallbackModel: String):
 }
 
 sealed class AgentResult {
+    data class ConversationToolResult(val toolCall: WorkflowToolCall, val usage: AgentUsage? = null) : AgentResult()
+    data class BackgroundResult(val background: NovelBackgroundProposal, val usage: AgentUsage? = null) : AgentResult()
     data class OutlineResult(val outline: NovelOutline, val usage: AgentUsage? = null) : AgentResult()
     data class SynopsisResult(val synopsis: ChapterSynopsis, val usage: AgentUsage? = null) : AgentResult()
     data class SceneTextResult(val text: String, val wordCount: Int, val usage: AgentUsage? = null) : AgentResult()

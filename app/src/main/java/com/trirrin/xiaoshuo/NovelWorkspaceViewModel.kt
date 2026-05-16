@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.CoroutineScope
 import com.trirrin.xiaoshuo.agent.AgentPipeline
 import com.trirrin.xiaoshuo.agent.AgentUsage
+import com.trirrin.xiaoshuo.agent.ConversationPlanInput
+import com.trirrin.xiaoshuo.agent.WorkflowToolCall
 import com.trirrin.xiaoshuo.agent.AgentResult
 import com.trirrin.xiaoshuo.agent.PipelineEvent
 import com.trirrin.xiaoshuo.data.GenerationSettings
@@ -25,6 +27,7 @@ import com.trirrin.xiaoshuo.model.Genre
 import com.trirrin.xiaoshuo.model.LocationEntry
 import com.trirrin.xiaoshuo.model.Novel
 import com.trirrin.xiaoshuo.model.NovelBible
+import com.trirrin.xiaoshuo.model.NovelBackgroundProposal
 import com.trirrin.xiaoshuo.model.NovelOutline
 import com.trirrin.xiaoshuo.model.NovelStatus
 import com.trirrin.xiaoshuo.model.NarrativeTense
@@ -61,6 +64,8 @@ import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.util.UUID
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -72,6 +77,7 @@ class NovelWorkspaceViewModel(
 ) : ViewModel() {
     private val json = Json { encodeDefaults = true; ignoreUnknownKeys = true }
     private val workflow = generationCoordinator.workflow
+    private val conversation = MutableStateFlow(ConversationState())
     private val selectedNovelId = MutableStateFlow<String?>(null)
     private val selectedChapterId = MutableStateFlow<String?>(null)
     private val selectedSceneId = MutableStateFlow<String?>(null)
@@ -148,7 +154,7 @@ class NovelWorkspaceViewModel(
             tokenUsage = history.third,
         )
     }
-    val uiState: StateFlow<NovelWorkspaceUiState> = combine(workspaceData, settings, workflow) { data, settings, workflow ->
+    val uiState: StateFlow<NovelWorkspaceUiState> = combine(workspaceData, settings, workflow, conversation) { data, settings, workflow, conversation ->
         NovelWorkspaceUiState(
             novels = data.novels,
             selectedNovel = data.selectedNovel,
@@ -161,6 +167,7 @@ class NovelWorkspaceViewModel(
             selectedScene = data.selectedScene,
             settings = settings,
             workflow = workflow,
+            conversation = conversation,
             bibleWarnings = data.selectedNovel?.bible?.warnings().orEmpty(),
         )
     }.stateIn(
@@ -212,6 +219,43 @@ class NovelWorkspaceViewModel(
 
         viewModelScope.launch {
             importPayload(payload)
+        }
+    }
+
+    fun submitConversationMessage(message: String) {
+        val cleanMessage = message.trim()
+        if (cleanMessage.isBlank()) return
+
+        appendConversation(ConversationRole.USER, cleanMessage)
+        planConversationTool(cleanMessage)
+    }
+
+    fun acceptPendingApproval() {
+        when (val approval = conversation.value.pendingApproval) {
+            null -> appendConversation(ConversationRole.ASSISTANT, "No proposal is waiting for approval.")
+            else -> acceptApproval(approval)
+        }
+    }
+
+    fun rejectPendingApproval() {
+        val approval = conversation.value.pendingApproval ?: run {
+            appendConversation(ConversationRole.ASSISTANT, "No proposal is waiting for rejection.")
+            return
+        }
+        conversation.update { it.copy(pendingApproval = null) }
+        appendConversation(ConversationRole.ASSISTANT, "Rejected ${approval.previewTitle}. Nothing was saved.")
+        appendEvent("Proposal rejected")
+    }
+
+    fun revisePendingApproval(feedback: String) {
+        val cleanFeedback = feedback.trim()
+        if (cleanFeedback.isBlank()) {
+            setError("Revision feedback is required")
+            return
+        }
+        when (val approval = conversation.value.pendingApproval) {
+            null -> appendConversation(ConversationRole.ASSISTANT, "No proposal is waiting for revision.")
+            else -> reviseApproval(approval, cleanFeedback)
         }
     }
 
@@ -404,36 +448,11 @@ class NovelWorkspaceViewModel(
     }
 
     fun generateOutline() {
-        val novel = uiState.value.selectedNovel
-        if (novel?.outline != null) {
-            requestOverwriteConfirmation(OverwriteTarget.OUTLINE) { generateOutlineConfirmed() }
+        val novel = uiState.value.selectedNovel ?: run {
+            setError("Create or select a novel first")
             return
         }
-        generateOutlineConfirmed()
-    }
-
-    private fun generateOutlineConfirmed() {
-        runPipelineStep("Generating outline") { novel, settings ->
-            require(settings.apiKey.isNotBlank()) { "API key is required before generation" }
-            val pipeline = pipelineFactory(settings)
-            val (outline, events) = pipeline.generateOutline(novel)
-            events.forEach { recordPipelineEvent(novel.id, settings, it) }
-            val generated = outline ?: error("Outline generation failed")
-            val updated = novel.copy(
-                outline = generated,
-                status = NovelStatus.OUTLINE_COMPLETE,
-                updatedAt = Clock.System.now(),
-            )
-            novel.outline?.let {
-                saveSnapshot(novel.id, SNAPSHOT_OUTLINE, novel.id, "Outline before generation", it)
-            }
-            novelRepository.upsertNovel(updated)
-            saveChapterShells(novel.id, generated.chapterBriefs)
-            val chapters = novelRepository.getChapters(novel.id)
-            selectedChapterId.value = chapters.firstOrNull { it.order == generated.chapterBriefs.firstOrNull()?.chapterIndex }?.id
-            selectedSceneId.value = null
-            appendEvent("Saved outline and ${chapters.size} chapter shells")
-        }
+        generateOutlineProposal(novel.id)
     }
 
     fun generateSelectedSynopsis() {
@@ -886,6 +905,240 @@ class NovelWorkspaceViewModel(
         }
     }
 
+    private fun planConversationTool(userMessage: String) {
+        val settings = uiState.value.settings
+        if (settings.apiKey.isBlank()) {
+            setError("API key is required before conversation planning")
+            appendConversation(ConversationRole.ASSISTANT, "Add an API key in Settings before I can route requests through the writing agent.")
+            return
+        }
+        if (generationCoordinator.isRunning || workflow.value.isBusy) {
+            setError("Generation already running")
+            return
+        }
+
+        viewModelScope.launch {
+            var plannedTool: WorkflowToolCall? = null
+            workflow.update {
+                it.copy(
+                    isBusy = true,
+                    error = null,
+                    events = (it.events + timestamped("Planning workflow tool call")).takeLast(12),
+                )
+            }
+            try {
+                val novel = uiState.value.selectedNovel
+                val pipeline = pipelineFactory(settings)
+                val (toolCall, events) = pipeline.planConversationTool(
+                    ConversationPlanInput(
+                        userMessage = userMessage,
+                        selectedNovelTitle = novel?.title,
+                        hasOutline = novel?.outline != null,
+                        pendingApprovalType = conversation.value.pendingApproval?.targetType?.name,
+                    ),
+                )
+                events.forEach { recordPipelineEvent(novel?.id, settings, it) }
+                plannedTool = toolCall ?: error("Conversation agent did not choose a tool")
+            } catch (error: CancellationException) {
+                appendEvent("Conversation planning cancelled")
+            } catch (error: Exception) {
+                setError(error.message ?: "Conversation planning failed")
+                appendConversation(ConversationRole.ASSISTANT, "I could not route that request. ${error.message ?: "Try rephrasing it."}")
+            } finally {
+                workflow.update { it.copy(isBusy = false) }
+            }
+            plannedTool?.let { executeConversationToolCall(it, userMessage) }
+        }
+    }
+
+    private fun executeConversationToolCall(toolCall: WorkflowToolCall, originalMessage: String) {
+        val args = toolCall.argumentsJson.toToolArguments(json)
+        when (toolCall.name) {
+            "createNovelBackgroundProposal" -> generateBackgroundProposal(
+                userRequest = args.string("userRequest") ?: originalMessage,
+            )
+            "generateOutlineProposal" -> generateOutline()
+            "acceptPendingApproval" -> acceptPendingApproval()
+            "rejectPendingApproval" -> rejectPendingApproval()
+            "revisePendingApproval" -> revisePendingApproval(
+                feedback = args.string("revisionFeedback") ?: originalMessage,
+            )
+            "askClarification" -> appendConversation(
+                ConversationRole.ASSISTANT,
+                args.string("message") ?: "Please clarify what you want me to do next.",
+            )
+            else -> {
+                setError("Unknown tool call: ${toolCall.name}")
+                appendConversation(ConversationRole.ASSISTANT, "I tried to call an unknown internal tool. That is a bug, not your fault.")
+            }
+        }
+    }
+
+    private fun generateBackgroundProposal(
+        userRequest: String,
+        revisionFeedback: String? = null,
+        previousProposal: NovelBackgroundProposal? = null,
+    ) {
+        val settings = uiState.value.settings
+        if (settings.apiKey.isBlank()) {
+            setError("API key is required before generation")
+            appendConversation(ConversationRole.ASSISTANT, "Add an API key in Settings before I generate a background proposal.")
+            return
+        }
+        if (generationCoordinator.isRunning) {
+            setError("Generation already running")
+            return
+        }
+
+        generationCoordinator.launch {
+            workflow.update { it.copy(isBusy = true, error = null, events = (it.events + timestamped("Generating background proposal")).takeLast(12)) }
+            try {
+                val pipeline = pipelineFactory(settings)
+                val (proposal, events) = pipeline.generateBackground(
+                    userRequest = userRequest,
+                    revisionFeedback = revisionFeedback,
+                    previousProposal = previousProposal,
+                )
+                events.forEach { recordPipelineEvent(null, settings, it) }
+                val generated = proposal ?: error("Background proposal generation failed")
+                val approval = PendingApproval(
+                    targetType = ApprovalTargetType.NOVEL_BACKGROUND,
+                    actionName = "acceptNovelBackground",
+                    previewTitle = generated.titleOptions.firstOrNull { it.isNotBlank() } ?: "Novel Background",
+                    previewText = generated.toPreviewText(),
+                    riskLevel = ApprovalRiskLevel.MEDIUM,
+                    requiredBeforeCommit = true,
+                    payload = ApprovalPayload.Background(userRequest, generated),
+                )
+                conversation.update { it.copy(pendingApproval = approval) }
+                appendConversation(ConversationRole.ASSISTANT, "I drafted a background proposal. Review it, then accept, reject, or request a revision.")
+                appendEvent("Background proposal ready")
+            } catch (error: CancellationException) {
+                appendEvent("Generation cancelled")
+            } catch (error: Exception) {
+                setError(error.message ?: "Background generation failed")
+            } finally {
+                workflow.update { it.copy(isBusy = false) }
+            }
+        }
+    }
+
+    private fun generateOutlineProposal(
+        novelId: String,
+        revisionFeedback: String? = null,
+        previousProposal: NovelOutline? = null,
+    ) {
+        val settings = uiState.value.settings
+        if (settings.apiKey.isBlank()) {
+            setError("API key is required before generation")
+            appendConversation(ConversationRole.ASSISTANT, "Add an API key in Settings before I generate an outline proposal.")
+            return
+        }
+        if (generationCoordinator.isRunning) {
+            setError("Generation already running")
+            return
+        }
+
+        generationCoordinator.launch {
+            workflow.update { it.copy(isBusy = true, error = null, events = (it.events + timestamped("Generating outline proposal")).takeLast(12)) }
+            try {
+                val novel = novelRepository.getNovel(novelId) ?: error("Novel not found")
+                val promptNovel = previousProposal?.let { novel.copy(outline = it) } ?: novel
+                val pipeline = pipelineFactory(settings)
+                val (outline, events) = pipeline.generateOutline(promptNovel, revisionFeedback = revisionFeedback)
+                events.forEach { recordPipelineEvent(novel.id, settings, it) }
+                val generated = outline ?: error("Outline proposal generation failed")
+                val risk = if (novel.outline == null) ApprovalRiskLevel.MEDIUM else ApprovalRiskLevel.HIGH
+                val approval = PendingApproval(
+                    novelId = novel.id,
+                    targetType = if (novel.outline == null) ApprovalTargetType.OUTLINE else ApprovalTargetType.OUTLINE_STRUCTURE_CHANGE,
+                    actionName = "acceptOutlineProposal",
+                    previewTitle = "Outline for ${novel.title}",
+                    previewText = generated.toPreviewText(),
+                    riskLevel = risk,
+                    requiredBeforeCommit = true,
+                    payload = ApprovalPayload.Outline(novel.id, generated),
+                )
+                conversation.update { it.copy(pendingApproval = approval) }
+                appendConversation(ConversationRole.ASSISTANT, "I drafted an outline proposal. It is only a proposal until you accept it.")
+                appendEvent("Outline proposal ready")
+            } catch (error: CancellationException) {
+                appendEvent("Generation cancelled")
+            } catch (error: Exception) {
+                setError(error.message ?: "Outline generation failed")
+            } finally {
+                workflow.update { it.copy(isBusy = false) }
+            }
+        }
+    }
+
+    private fun acceptApproval(approval: PendingApproval) {
+        when (val payload = approval.payload) {
+            is ApprovalPayload.Background -> acceptBackgroundProposal(payload.proposal)
+            is ApprovalPayload.Outline -> acceptOutlineProposal(payload.novelId, payload.outline)
+        }
+    }
+
+    private fun reviseApproval(approval: PendingApproval, feedback: String) {
+        appendConversation(ConversationRole.USER, "Revision request: $feedback")
+        conversation.update { it.copy(pendingApproval = null) }
+        when (val payload = approval.payload) {
+            is ApprovalPayload.Background -> generateBackgroundProposal(
+                userRequest = payload.userRequest,
+                revisionFeedback = feedback,
+                previousProposal = payload.proposal,
+            )
+            is ApprovalPayload.Outline -> generateOutlineProposal(
+                novelId = payload.novelId,
+                revisionFeedback = feedback,
+                previousProposal = payload.outline,
+            )
+        }
+    }
+
+    private fun acceptBackgroundProposal(proposal: NovelBackgroundProposal) {
+        viewModelScope.launch {
+            val now = Clock.System.now()
+            val novel = proposal.toNovel(now)
+            novelRepository.upsertNovel(novel)
+            selectedNovelId.value = novel.id
+            selectedChapterId.value = null
+            selectedSceneId.value = null
+            conversation.update { it.copy(pendingApproval = null) }
+            appendConversation(ConversationRole.ASSISTANT, "Accepted background and saved ${novel.title}. I will draft an outline proposal next.")
+            appendEvent("Accepted background proposal")
+            generateOutlineProposal(novel.id)
+        }
+    }
+
+    private fun acceptOutlineProposal(novelId: String, outline: NovelOutline) {
+        viewModelScope.launch {
+            val novel = novelRepository.getNovel(novelId) ?: run {
+                setError("Novel not found")
+                return@launch
+            }
+            val now = Clock.System.now()
+            novel.outline?.let {
+                saveSnapshot(novel.id, SNAPSHOT_OUTLINE, novel.id, "Outline before proposal acceptance", it)
+            }
+            novelRepository.upsertNovel(
+                novel.copy(
+                    outline = outline,
+                    status = NovelStatus.OUTLINE_COMPLETE,
+                    updatedAt = now,
+                ),
+            )
+            saveChapterShells(novel.id, outline.chapterBriefs)
+            val chapters = novelRepository.getChapters(novel.id)
+            selectedNovelId.value = novel.id
+            selectedChapterId.value = chapters.firstOrNull { it.order == outline.chapterBriefs.firstOrNull()?.chapterIndex }?.id
+            selectedSceneId.value = null
+            conversation.update { it.copy(pendingApproval = null) }
+            appendConversation(ConversationRole.ASSISTANT, "Accepted outline and created ${chapters.size} chapter shell(s).")
+            appendEvent("Accepted outline proposal")
+        }
+    }
+
     private suspend fun importPayload(payload: ChatImportPayload) {
         val now = Clock.System.now()
         val outline = payload.toImportedOutline()
@@ -1033,9 +1286,9 @@ class NovelWorkspaceViewModel(
         appendEvent("Overwrite confirmation required")
     }
 
-    private suspend fun recordPipelineEvent(novelId: String, settings: GenerationSettings, event: PipelineEvent) {
+    private suspend fun recordPipelineEvent(novelId: String?, settings: GenerationSettings, event: PipelineEvent) {
         appendPipelineEvent(event)
-        if (event is PipelineEvent.UsageRecorded) {
+        if (event is PipelineEvent.UsageRecorded && novelId != null) {
             novelRepository.saveTokenUsage(
                 TokenUsageRecord(
                     novelId = novelId,
@@ -1110,6 +1363,7 @@ class NovelWorkspaceViewModel(
     private fun appendPipelineEvent(event: PipelineEvent) {
         when (event) {
             is PipelineEvent.Step -> appendEvent(event.description)
+            is PipelineEvent.BackgroundGenerated -> appendEvent("Background proposal generated")
             is PipelineEvent.OutlineGenerated -> appendEvent("Outline generated")
             is PipelineEvent.SynopsisGenerated -> appendEvent("Synopsis generated")
             is PipelineEvent.SceneTextComplete -> appendEvent("Scene text generated: ${event.wordCount} words")
@@ -1124,6 +1378,14 @@ class NovelWorkspaceViewModel(
 
     private fun appendEvent(message: String) {
         workflow.update { state -> state.copy(events = (state.events + timestamped(message)).takeLast(12)) }
+    }
+
+    private fun appendConversation(role: ConversationRole, text: String) {
+        conversation.update { state ->
+            state.copy(
+                messages = (state.messages + ConversationMessage(role = role, text = text)).takeLast(80),
+            )
+        }
     }
 
     private fun setError(message: String) {
@@ -1713,6 +1975,94 @@ private fun <T> duplicateWarnings(
         }
 }
 
+private fun String.toToolArguments(json: Json): JsonObject {
+    return runCatching { json.decodeFromString<JsonObject>(this) }
+        .getOrDefault(JsonObject(emptyMap()))
+}
+
+private fun JsonObject.string(name: String): String? {
+    return this[name]?.jsonPrimitive?.content?.trim()?.takeIf { it.isNotBlank() }
+}
+
+private fun NovelBackgroundProposal.toNovel(now: kotlinx.datetime.Instant): Novel {
+    val title = titleOptions.firstOrNull { it.isNotBlank() }?.trim() ?: "Untitled Novel"
+    return Novel(
+        title = title,
+        genre = genre,
+        concept = toConceptText(),
+        themes = themes.map { it.trim() }.filter { it.isNotBlank() },
+        styleGuide = styleGuide,
+        bible = initialBibleCandidates,
+        status = NovelStatus.DRAFTING_OUTLINE,
+        createdAt = now,
+        updatedAt = now,
+    )
+}
+
+private fun NovelBackgroundProposal.toConceptText(): String {
+    return listOf(
+        premise,
+        worldSetup,
+        protagonistSeed,
+        majorConflict,
+    ).map { it.trim() }.filter { it.isNotBlank() }.joinToString("\n\n")
+}
+
+private fun NovelBackgroundProposal.toPreviewText(): String {
+    return buildString {
+        appendSection("Title Options", titleOptions.joinToString("\n") { "- $it" })
+        appendSection("Genre And Tone", listOf(genre.label, tone).filter { it.isNotBlank() }.joinToString(" | "))
+        appendSection("Premise", premise)
+        appendSection("World Setup", worldSetup)
+        appendSection("Protagonist", protagonistSeed)
+        appendSection("Core Cast", coreCastSeeds.joinToString("\n") { "- $it" })
+        appendSection("Major Conflict", majorConflict)
+        appendSection("Themes", themes.joinToString(", "))
+        appendSection("Style Guide", styleGuide.toPreviewText())
+        appendSection("Initial Bible Candidates", initialBibleCandidates.toPreviewText())
+    }.trim()
+}
+
+private fun NovelOutline.toPreviewText(): String {
+    return buildString {
+        appendSection("Premise", premise)
+        appendSection("Major Plot Points", majorPlotPoints.joinToString("\n") { point ->
+            "- ${point.name} (${point.position}): ${point.description}"
+        })
+        appendSection("Character Arcs", characterArcs.joinToString("\n") { "- $it" })
+        appendSection("Thematic Structure", thematicStructure)
+        appendSection("Chapters", chapterBriefs.joinToString("\n") { brief ->
+            "${brief.chapterIndex}. ${brief.title}\n   ${brief.plotBeats}\n   ${brief.purposeInStory}"
+        })
+    }.trim()
+}
+
+private fun StyleGuide.toPreviewText(): String {
+    return listOf(
+        "Voice: $narrativeVoice",
+        "Tense: $tense",
+        "Prose: $proseStyle",
+        "Scene target: $targetSceneWordCountMin-$targetSceneWordCountMax words",
+        additionalNotes.takeIf { it.isNotBlank() }?.let { "Notes: $it" },
+    ).filterNotNull().joinToString("\n")
+}
+
+private fun NovelBible.toPreviewText(): String {
+    return buildString {
+        appendSection("Characters", characters.joinToString("\n") { "- ${it.name}: ${it.description}" })
+        appendSection("Locations", locations.joinToString("\n") { "- ${it.name}: ${it.description}" })
+        appendSection("World Rules", worldRules.joinToString("\n") { "- ${it.category}: ${it.rule}" })
+        appendSection("Themes", themes.joinToString("\n") { "- ${it.name}: ${it.description}" })
+    }.trim().ifBlank { "No initial Bible candidates." }
+}
+
+private fun StringBuilder.appendSection(title: String, body: String) {
+    if (body.isBlank()) return
+    if (isNotEmpty()) appendLine()
+    appendLine(title)
+    appendLine(body)
+}
+
 private data class WorkspaceData(
     val novels: List<Novel> = emptyList(),
     val selectedNovel: Novel? = null,
@@ -1743,6 +2093,7 @@ data class NovelWorkspaceUiState(
     val selectedScene: Scene? = null,
     val settings: GenerationSettings,
     val workflow: WorkflowState = WorkflowState(),
+    val conversation: ConversationState = ConversationState(),
     val bibleWarnings: List<BibleConflictWarning> = emptyList(),
 )
 
@@ -1768,6 +2119,64 @@ data class BibleConflictWarning(
     val detail: String,
     val conflictId: String? = null,
 )
+
+data class ConversationState(
+    val messages: List<ConversationMessage> = listOf(
+        ConversationMessage(
+            role = ConversationRole.ASSISTANT,
+            text = "Tell me what kind of novel you want to write. I will turn it into proposals you can approve before anything is saved.",
+        ),
+    ),
+    val pendingApproval: PendingApproval? = null,
+)
+
+data class ConversationMessage(
+    val role: ConversationRole,
+    val text: String,
+    val createdAt: kotlinx.datetime.Instant = Clock.System.now(),
+)
+
+enum class ConversationRole {
+    USER,
+    ASSISTANT,
+}
+
+data class PendingApproval(
+    val id: String = UUID.randomUUID().toString(),
+    val novelId: String? = null,
+    val targetType: ApprovalTargetType,
+    val actionName: String,
+    val previewTitle: String,
+    val previewText: String,
+    val riskLevel: ApprovalRiskLevel,
+    val requiredBeforeCommit: Boolean,
+    val payload: ApprovalPayload,
+    val createdAt: kotlinx.datetime.Instant = Clock.System.now(),
+)
+
+enum class ApprovalTargetType {
+    NOVEL_BACKGROUND,
+    OUTLINE,
+    OUTLINE_STRUCTURE_CHANGE,
+}
+
+enum class ApprovalRiskLevel {
+    LOW,
+    MEDIUM,
+    HIGH,
+}
+
+sealed interface ApprovalPayload {
+    data class Background(
+        val userRequest: String,
+        val proposal: NovelBackgroundProposal,
+    ) : ApprovalPayload
+
+    data class Outline(
+        val novelId: String,
+        val outline: NovelOutline,
+    ) : ApprovalPayload
+}
 
 data class WorkflowState(
     val isBusy: Boolean = false,

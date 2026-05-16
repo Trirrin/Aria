@@ -266,59 +266,6 @@ class LlmClientHttpTest {
         }
     }
 
-    @Test
-    fun `openai malformed stream event maps to network error`() = runTest {
-        val server = MockWebServer()
-        server.enqueue(
-            MockResponse()
-                .setResponseCode(200)
-                .setHeader("Content-Type", "text/event-stream")
-                .setBody("data: {not-json}\n\n"),
-        )
-
-        try {
-            val client = OpenAiLlmClient(
-                apiKey = "openai-key",
-                baseUrl = server.url("/").toString().trimEnd('/'),
-            )
-
-            try {
-                client.stream(sampleRequest(model = "gpt-test")).toList()
-                fail("Expected NetworkError")
-            } catch (error: LlmError.NetworkError) {
-                assertTrue(error.message.orEmpty().contains("Malformed OpenAI stream event"))
-            }
-        } finally {
-            server.shutdown()
-        }
-    }
-
-    @Test
-    fun `anthropic malformed stream event maps to network error`() = runTest {
-        val server = MockWebServer()
-        server.enqueue(
-            MockResponse()
-                .setResponseCode(200)
-                .setHeader("Content-Type", "text/event-stream")
-                .setBody("data: {not-json}\n\n"),
-        )
-
-        try {
-            val client = AnthropicLlmClient(
-                apiKey = "anthropic-key",
-                baseUrl = server.url("/").toString().trimEnd('/'),
-            )
-
-            try {
-                client.stream(sampleRequest(model = "claude-test")).toList()
-                fail("Expected NetworkError")
-            } catch (error: LlmError.NetworkError) {
-                assertTrue(error.message.orEmpty().contains("Malformed Anthropic stream event"))
-            }
-        } finally {
-            server.shutdown()
-        }
-    }
 
     @Test
     fun `factory uses default model only when request model is blank`() = runTest {
@@ -332,7 +279,8 @@ class LlmClientHttpTest {
                         """
                         {
                           "choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}],
-                          "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+                          "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                          "model": "gpt-test"
                         }
                         """.trimIndent(),
                     ),

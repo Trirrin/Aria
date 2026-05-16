@@ -354,12 +354,12 @@ class NovelWorkspaceViewModelTest {
         viewModel.uiState.test {
             skipItemsUntil { it.selectedNovel?.id == novel.id }
             viewModel.generateOutline()
-            skipItemsUntil { it.workflow.overwriteConfirmation?.target == OverwriteTarget.OUTLINE }
-            viewModel.confirmOverwrite()
             val failed = skipItemsUntil { it.workflow.error == "API key is required before generation" }
 
             assertFalse(failed.workflow.isBusy)
-            coVerify(exactly = 0) { pipeline.generateOutline(any()) }
+            assertNull(failed.workflow.overwriteConfirmation)
+            assertNull(failed.conversation.pendingApproval)
+            coVerify(exactly = 0) { pipeline.generateOutline(any(), any()) }
             cancelAndIgnoreRemainingEvents()
         }
     }

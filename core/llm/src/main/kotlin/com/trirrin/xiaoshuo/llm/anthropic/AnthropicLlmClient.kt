@@ -1,215 +1,253 @@
 package com.trirrin.xiaoshuo.llm.anthropic
 
-import com.trirrin.xiaoshuo.llm.*
+import com.anthropic.client.AnthropicClient
+import com.anthropic.client.okhttp.AnthropicOkHttpClient
+import com.anthropic.errors.AnthropicIoException
+import com.anthropic.errors.AnthropicServiceException
+import com.anthropic.core.JsonValue
+import com.anthropic.models.messages.CacheControlEphemeral
+import com.anthropic.models.messages.MessageCreateParams
+import com.anthropic.models.messages.TextBlockParam
+import com.anthropic.models.messages.Tool
+import com.anthropic.models.messages.ToolChoiceAny
+import com.anthropic.models.messages.ToolChoiceAuto
+import com.anthropic.models.messages.ToolChoiceNone
+import com.anthropic.models.messages.ToolChoiceTool
+import com.trirrin.xiaoshuo.llm.LlmChunk
+import com.trirrin.xiaoshuo.llm.LlmClient
+import com.trirrin.xiaoshuo.llm.LlmError
+import com.trirrin.xiaoshuo.llm.LlmProvider
+import com.trirrin.xiaoshuo.llm.LlmRequest
+import com.trirrin.xiaoshuo.llm.LlmTool
+import com.trirrin.xiaoshuo.llm.LlmToolCall
+import com.trirrin.xiaoshuo.llm.LlmToolChoice
+import com.trirrin.xiaoshuo.llm.LlmResponse
+import com.trirrin.xiaoshuo.llm.MessageRole
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.serialization.json.*
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.Response
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.longOrNull
 
 class AnthropicLlmClient(
-    private val apiKey: String,
-    private val baseUrl: String = "https://api.anthropic.com",
-    private val client: OkHttpClient = OkHttpClient(),
+    apiKey: String,
+    baseUrl: String = "https://api.anthropic.com",
+    private val client: AnthropicClient = AnthropicOkHttpClient.builder()
+        .apiKey(apiKey)
+        .baseUrl(baseUrl)
+        .build(),
 ) : LlmClient {
 
     override val provider = LlmProvider.ANTHROPIC
 
-    private val json = Json { ignoreUnknownKeys = true }
-
-    override suspend fun complete(request: LlmRequest): LlmResponse {
-        val httpRequest = buildHttpRequest(request, stream = false)
-        val response = client.newCall(httpRequest).execute()
-        return handleResponse(response, request.model)
+    override suspend fun complete(request: LlmRequest): LlmResponse = withContext(Dispatchers.IO) {
+        try {
+            val response = client.messages().create(request.toMessageCreateParams())
+            LlmResponse(
+                content = response.content().textContent(),
+                inputTokens = response.usage().inputTokens().toInt(),
+                outputTokens = response.usage().outputTokens().toInt(),
+                finishReason = response.stopReason().orElse(null)?.asString(),
+                model = response.model().asString(),
+                toolCalls = response.content().toolCalls(),
+            )
+        } catch (error: Exception) {
+            throw error.toLlmError()
+        }
     }
 
     override fun stream(request: LlmRequest): Flow<LlmChunk> = flow {
-        val httpRequest = buildHttpRequest(request, stream = true)
-        val response = client.newCall(httpRequest).execute()
-        if (!response.isSuccessful) {
-            handleResponse(response, request.model)
-            return@flow
-        }
-        val reader = response.body?.byteStream()?.bufferedReader()
-            ?: throw LlmError.NetworkError(Exception("Empty response body"))
-
         try {
             var inputTokens: Int? = null
             var outputTokens: Int? = null
-            var completed = false
-            var line = reader.readLine()
-
-            while (line != null) {
-                if (line.startsWith("data: ")) {
-                    val data = line.removePrefix("data: ").trim()
-                    if (data == "[DONE]") {
-                        completed = true
-                        break
-                    }
-
-                    val event = parseStreamObject(data)
-                    val type = event["type"]?.jsonPrimitive?.content
-
-                    when (type) {
-                        "content_block_delta" -> {
-                            val delta = event["delta"]?.jsonObject
-                                ?.get("text")?.jsonPrimitive?.content ?: ""
-                            if (delta.isNotEmpty()) {
-                                emit(LlmChunk(delta = delta))
+            client.messages().createStreaming(request.toMessageCreateParams()).use { stream ->
+                val iterator = stream.stream().iterator()
+                while (iterator.hasNext()) {
+                    val event = iterator.next()
+                    when {
+                        event.isMessageStart() -> {
+                            val usage = event.asMessageStart().message().usage()
+                            inputTokens = usage.inputTokens().toInt()
+                        }
+                        event.isContentBlockDelta() -> {
+                            val delta = event.asContentBlockDelta().delta()
+                            if (delta.isText()) {
+                                val text = delta.asText().text()
+                                if (text.isNotEmpty()) {
+                                    emit(LlmChunk(delta = text))
+                                }
                             }
                         }
-                        "message_start" -> {
-                            inputTokens = event["message"]?.jsonObject
-                                ?.get("usage")?.jsonObject
-                                ?.get("input_tokens")?.jsonPrimitive?.intOrNull
-                        }
-                        "message_delta" -> {
-                            outputTokens = event["usage"]?.jsonObject
-                                ?.get("output_tokens")?.jsonPrimitive?.intOrNull
-                            emit(LlmChunk(
-                                delta = "",
-                                inputTokens = inputTokens,
-                                outputTokens = outputTokens,
-                            ))
+                        event.isMessageDelta() -> {
+                            val usage = event.asMessageDelta().usage()
+                            inputTokens = usage.inputTokens().orElse(inputTokens?.toLong() ?: 0L).toInt()
+                            outputTokens = usage.outputTokens().toInt()
                         }
                     }
                 }
-                line = reader.readLine()
             }
-
-            if (!completed || inputTokens != null || outputTokens != null) {
-                emit(LlmChunk(
-                    delta = "",
-                    inputTokens = inputTokens,
-                    outputTokens = outputTokens,
-                    isComplete = true,
-                ))
-            } else {
-                emit(LlmChunk(delta = "", isComplete = true))
-            }
-        } finally {
-            reader.close()
-            response.close()
+            emit(LlmChunk(delta = "", inputTokens = inputTokens, outputTokens = outputTokens, isComplete = true))
+        } catch (error: Exception) {
+            throw error.toLlmError()
         }
     }.flowOn(Dispatchers.IO)
 
-    private fun parseStreamObject(data: String): JsonObject {
-        return try {
-            json.parseToJsonElement(data).jsonObject
-        } catch (error: Exception) {
-            throw LlmError.NetworkError(IllegalStateException("Malformed Anthropic stream event", error))
+    private fun LlmRequest.toMessageCreateParams(): MessageCreateParams {
+        val builder = MessageCreateParams.builder()
+            .model(model)
+            .maxTokens(maxTokens.toLong())
+
+        when {
+            systemPrompt.isBlank() -> Unit
+            cacheableSystemPrompt -> builder.systemOfTextBlockParams(
+                listOf(
+                    TextBlockParam.builder()
+                        .text(systemPrompt)
+                        .cacheControl(CacheControlEphemeral.builder().build())
+                        .build(),
+                ),
+            )
+            else -> builder.system(systemPrompt)
         }
+
+        messages.forEach { message ->
+            when (message.role) {
+                MessageRole.SYSTEM -> builder.addUserMessage(message.content)
+                MessageRole.USER -> builder.addUserMessage(message.content)
+                MessageRole.ASSISTANT -> builder.addAssistantMessage(message.content)
+            }
+        }
+        if (tools.isNotEmpty()) {
+            tools.forEach { tool -> builder.addTool(tool.toAnthropicTool()) }
+            when (val choice = toolChoice) {
+                LlmToolChoice.Auto -> builder.toolChoice(
+                    ToolChoiceAuto.builder().type(JsonValue.from("auto")).disableParallelToolUse(true).build(),
+                )
+                LlmToolChoice.Required -> builder.toolChoice(
+                    ToolChoiceAny.builder().type(JsonValue.from("any")).disableParallelToolUse(true).build(),
+                )
+                LlmToolChoice.None -> builder.toolChoice(
+                    ToolChoiceNone.builder().type(JsonValue.from("none")).build(),
+                )
+                is LlmToolChoice.Named -> builder.toolChoice(choice.toAnthropicToolChoice())
+            }
+        }
+        if (stopSequences.isNotEmpty()) {
+            builder.stopSequences(stopSequences)
+        }
+        return builder.build()
     }
 
-    private fun buildHttpRequest(request: LlmRequest, stream: Boolean): Request {
-        val messagesArray = buildJsonArray {
-            for (msg in request.messages) {
-                add(buildJsonObject {
-                    put("role", msg.role.name.lowercase())
-                    put("content", msg.content)
-                })
-            }
-        }
+    private fun List<com.anthropic.models.messages.ContentBlock>.textContent(): String {
+        return filter { it.isText() }
+            .joinToString(separator = "") { it.asText().text() }
+    }
 
-        val body = buildJsonObject {
-            put("model", request.model)
-            put("max_tokens", request.maxTokens)
-            put("system", buildSystemPrompt(request))
-            put("messages", messagesArray)
-            put("temperature", request.temperature)
-            if (request.stopSequences.isNotEmpty()) {
-                put("stop_sequences", buildJsonArray {
-                    request.stopSequences.forEach { add(it) }
-                })
+    private fun List<com.anthropic.models.messages.ContentBlock>.toolCalls(): List<LlmToolCall> {
+        return filter { it.isToolUse() }
+            .map { it.asToolUse() }
+            .map { toolUse ->
+                LlmToolCall(
+                    id = toolUse.id(),
+                    name = toolUse.name(),
+                    argumentsJson = Json.encodeToString(toolUse._input().convert(Any::class.java).toJsonElement()),
+                )
             }
-            if (stream) put("stream", true)
-        }
+    }
 
-        return Request.Builder()
-            .url("$baseUrl/v1/messages")
-            .addHeader("x-api-key", apiKey)
-            .addHeader("anthropic-version", "2023-06-01")
-            .addHeader("content-type", "application/json")
-            .post(body.toString().toRequestBody(JSON_MEDIA_TYPE))
+    private fun LlmTool.toAnthropicTool(): Tool {
+        val properties = inputSchema["properties"] as? JsonObject ?: JsonObject(emptyMap())
+        val required = (inputSchema["required"] as? JsonArray)
+            ?.mapNotNull { (it as? JsonPrimitive)?.content }
+            .orEmpty()
+        return Tool.builder()
+            .name(name)
+            .description(description)
+            .inputSchema(
+                Tool.InputSchema.builder()
+                    .type(JsonValue.from(inputSchema["type"]?.toPlainValue() ?: "object"))
+                    .properties(
+                        Tool.InputSchema.Properties.builder()
+                            .putAllAdditionalProperties(properties.toAnthropicJsonValueMap())
+                            .build(),
+                    )
+                    .required(required)
+                    .build(),
+            )
+            .strict(strict)
             .build()
     }
 
-    private fun buildSystemPrompt(request: LlmRequest): JsonElement {
-        if (!request.cacheableSystemPrompt) return JsonPrimitive(request.systemPrompt)
-        return buildJsonArray {
-            add(buildJsonObject {
-                put("type", "text")
-                put("text", request.systemPrompt)
-                put("cache_control", buildJsonObject {
-                    put("type", "ephemeral")
-                })
-            })
-        }
+    private fun LlmToolChoice.Named.toAnthropicToolChoice(): ToolChoiceTool {
+        return ToolChoiceTool.builder()
+            .type(JsonValue.from("tool"))
+            .name(name)
+            .disableParallelToolUse(true)
+            .build()
     }
 
-    private fun handleResponse(response: Response, requestModel: String): LlmResponse {
-        val body = response.body?.string()
-            ?: throw LlmError.NetworkError(Exception("Empty response body"))
+    private fun JsonObject.toAnthropicJsonValueMap(): Map<String, JsonValue> {
+        return mapValues { (_, value) -> value.toAnthropicJsonValue() }
+    }
 
-        when (response.code) {
-            401 -> throw LlmError.AuthFailed("Invalid API key")
-            429 -> {
-                val retryAfter = response.header("retry-after")?.toLongOrNull()
-                throw LlmError.RateLimited(retryAfter)
+    private fun JsonElement.toAnthropicJsonValue(): JsonValue {
+        return JsonValue.from(toPlainValue())
+    }
+
+    private fun JsonElement.toPlainValue(): Any? {
+        return when (this) {
+            JsonNull -> null
+            is JsonObject -> mapValues { (_, value) -> value.toPlainValue() }
+            is JsonArray -> map { it.toPlainValue() }
+            is JsonPrimitive -> when {
+                isString -> content
+                booleanOrNull != null -> booleanOrNull
+                longOrNull != null -> longOrNull
+                doubleOrNull != null -> doubleOrNull
+                else -> content
             }
         }
-
-        if (!response.isSuccessful) {
-            val (type, message) = parseError(body)
-            if (type == "context_length_exceeded" || message.isContextTooLong()) {
-                throw LlmError.ContextTooLong(message = message)
-            }
-            throw LlmError.ApiError(response.code, message)
-        }
-
-        val jsonBody = json.parseToJsonElement(body).jsonObject
-        val content = jsonBody["content"]?.jsonArray
-            ?.filterIsInstance<JsonObject>()
-            ?.joinToString("") { it["text"]?.jsonPrimitive?.content ?: "" }
-            ?: ""
-
-        val usage = jsonBody["usage"]?.jsonObject
-        val inputTokens = usage?.get("input_tokens")?.jsonPrimitive?.intOrNull ?: 0
-        val outputTokens = usage?.get("output_tokens")?.jsonPrimitive?.intOrNull ?: 0
-        val model = jsonBody["model"]?.jsonPrimitive?.contentOrNull ?: requestModel
-
-        return LlmResponse(
-            content = content,
-            inputTokens = inputTokens,
-            outputTokens = outputTokens,
-            finishReason = jsonBody["stop_reason"]?.jsonPrimitive?.contentOrNull,
-            model = model,
-        )
     }
 
-    private fun parseError(body: String): Pair<String?, String> {
-        return try {
-            val error = json.parseToJsonElement(body).jsonObject["error"]?.jsonObject
-            val type = error?.get("type")?.jsonPrimitive?.contentOrNull
-            val message = error?.get("message")?.jsonPrimitive?.contentOrNull ?: body
-            type to message
-        } catch (_: Exception) {
-            null to body
+    private fun Any?.toJsonElement(): JsonElement {
+        return when (this) {
+            null -> JsonNull
+            is Map<*, *> -> JsonObject(
+                entries.associate { (key, value) -> key.toString() to value.toJsonElement() },
+            )
+            is List<*> -> JsonArray(map { it.toJsonElement() })
+            is Boolean -> JsonPrimitive(this)
+            is Number -> JsonPrimitive(this)
+            else -> JsonPrimitive(toString())
         }
     }
 
-    private fun String.isContextTooLong(): Boolean {
-        val lower = lowercase()
-        return ("context" in lower && ("long" in lower || "length" in lower || "exceed" in lower)) ||
-            "prompt is too long" in lower
+    private fun Exception.toLlmError(): LlmError {
+        return when (this) {
+            is LlmError -> this
+            is AnthropicServiceException -> toServiceError()
+            is AnthropicIoException -> LlmError.NetworkError(this)
+            else -> LlmError.NetworkError(this)
+        }
     }
 
-    companion object {
-        private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+    private fun AnthropicServiceException.toServiceError(): LlmError {
+        val message = message ?: body().toString()
+        return when {
+            statusCode() == 401 -> LlmError.AuthFailed(message)
+            statusCode() == 429 -> LlmError.RateLimited()
+            statusCode() == 400 && message.contains("too long", ignoreCase = true) -> LlmError.ContextTooLong(message = message)
+            statusCode() == 400 && message.contains("context", ignoreCase = true) -> LlmError.ContextTooLong(message = message)
+            else -> LlmError.ApiError(statusCode(), message)
+        }
     }
 }

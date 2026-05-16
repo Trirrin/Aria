@@ -8,6 +8,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)
+    implementation(libs.openai.java)
+    implementation(libs.anthropic.java)
 
     testImplementation(libs.junit5.api)
     testRuntimeOnly(libs.junit5.engine)

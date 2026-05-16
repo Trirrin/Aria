@@ -1,6 +1,7 @@
 package com.trirrin.xiaoshuo.prompt
 
 import com.trirrin.xiaoshuo.model.*
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 data class OutlineInput(
@@ -9,6 +10,8 @@ data class OutlineInput(
     val themes: List<String>,
     val styleGuide: StyleGuide,
     val chapterCount: IntRange = 15..25,
+    val revisionFeedback: String? = null,
+    val previousOutline: NovelOutline? = null,
 )
 
 class OutlinePrompt : PromptTemplate<OutlineInput, NovelOutline> {
@@ -17,6 +20,7 @@ class OutlinePrompt : PromptTemplate<OutlineInput, NovelOutline> {
     override val description = "Generate a detailed novel outline from concept"
 
     private val json = Json { ignoreUnknownKeys = true }
+    private val outputJson = Json { encodeDefaults = true }
 
     override fun buildSystemPrompt(): String = """
 You are a master novelist and plot architect with deep expertise in fiction structure.
@@ -49,20 +53,30 @@ OUTPUT FORMAT: Return ONLY a JSON object with this exact structure, no markdown,
 }
 """.trimIndent()
 
-    override fun buildUserPrompt(input: OutlineInput): String = """
-NOVEL CONCEPT:
-${input.concept}
-
-GENRE: ${input.genre.label}
-
-THEMES: ${input.themes.joinToString(", ")}
-
-NARRATIVE STYLE: ${input.styleGuide.narrativeVoice}, ${input.styleGuide.tense} tense, ${input.styleGuide.proseStyle} prose
-
-TARGET CHAPTER COUNT: ${input.chapterCount.first}-${input.chapterCount.last}
-
-Create a complete novel outline following the JSON format specified in your instructions.
-""".trimIndent()
+    override fun buildUserPrompt(input: OutlineInput): String = buildString {
+        appendLine("NOVEL CONCEPT:")
+        appendLine(input.concept)
+        appendLine()
+        appendLine("GENRE: ${input.genre.label}")
+        appendLine()
+        appendLine("THEMES: ${input.themes.joinToString(", ")}")
+        appendLine()
+        appendLine("NARRATIVE STYLE: ${input.styleGuide.narrativeVoice}, ${input.styleGuide.tense} tense, ${input.styleGuide.proseStyle} prose")
+        appendLine()
+        appendLine("TARGET CHAPTER COUNT: ${input.chapterCount.first}-${input.chapterCount.last}")
+        if (!input.revisionFeedback.isNullOrBlank()) {
+            appendLine()
+            appendLine("REVISION REQUEST:")
+            appendLine(input.revisionFeedback.trim())
+        }
+        if (input.previousOutline != null) {
+            appendLine()
+            appendLine("CURRENT OUTLINE TO REVISE OR REPLACE:")
+            appendLine(outputJson.encodeToString(input.previousOutline))
+        }
+        appendLine()
+        appendLine("Create a complete novel outline following the JSON format specified in your instructions.")
+    }
 
     override fun parseOutput(rawOutput: String): Result<NovelOutline> {
         return try {

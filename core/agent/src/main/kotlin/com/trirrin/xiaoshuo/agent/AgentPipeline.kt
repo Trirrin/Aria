@@ -3,6 +3,7 @@ package com.trirrin.xiaoshuo.agent
 import com.trirrin.xiaoshuo.llm.LlmMessage
 import com.trirrin.xiaoshuo.llm.LlmRequest
 import com.trirrin.xiaoshuo.llm.MessageRole
+import com.trirrin.xiaoshuo.prompt.BackgroundInput
 import com.trirrin.xiaoshuo.prompt.ChapterSynopsisInput
 import com.trirrin.xiaoshuo.prompt.ChapterSynopsisPrompt
 import com.trirrin.xiaoshuo.model.*
@@ -15,6 +16,7 @@ import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
 
 sealed class PipelineEvent {
+    data class BackgroundGenerated(val background: NovelBackgroundProposal) : PipelineEvent()
     data class OutlineGenerated(val outline: NovelOutline) : PipelineEvent()
     data class SynopsisGenerated(val synopsis: ChapterSynopsis) : PipelineEvent()
     data class SceneTextDelta(val delta: String) : PipelineEvent()
@@ -51,10 +53,66 @@ class AgentPipeline(
     private val bibleMerger: BibleMerger,
     private val rollingSummaryAgent: RollingSummaryAgent? = null,
     private val config: PipelineConfig? = null,
+    private val backgroundAgent: BackgroundAgent? = null,
+    private val conversationAgent: ConversationAgent? = null,
 ) {
+
+    suspend fun planConversationTool(input: ConversationPlanInput): Pair<WorkflowToolCall?, List<PipelineEvent>> {
+        val events = mutableListOf<PipelineEvent>()
+        events.add(PipelineEvent.Step("conversation", "Planning workflow tool call"))
+        val agent = conversationAgent ?: error("Conversation agent is not configured")
+        return when (val result = agent.plan(input)) {
+            is AgentResult.ConversationToolResult -> {
+                result.usage?.let { events.add(PipelineEvent.UsageRecorded(it)) }
+                result.toolCall to events
+            }
+            is AgentResult.Error -> {
+                events.add(PipelineEvent.Error(result.message, result.cause))
+                null to events
+            }
+            else -> {
+                events.add(PipelineEvent.Error("Unexpected result type from conversation agent"))
+                null to events
+            }
+        }
+    }
+
+    suspend fun generateBackground(
+        userRequest: String,
+        revisionFeedback: String? = null,
+        previousProposal: NovelBackgroundProposal? = null,
+    ): Pair<NovelBackgroundProposal?, List<PipelineEvent>> {
+        val events = mutableListOf<PipelineEvent>()
+        events.add(PipelineEvent.Step("background", "Generating background proposal"))
+
+        val agent = backgroundAgent ?: error("Background agent is not configured")
+        val result = agent.generate(
+            BackgroundInput(
+                userRequest = userRequest,
+                revisionFeedback = revisionFeedback,
+                previousProposal = previousProposal,
+            ),
+        )
+        return when (result) {
+            is AgentResult.BackgroundResult -> {
+                result.usage?.let { events.add(PipelineEvent.UsageRecorded(it)) }
+                events.add(PipelineEvent.BackgroundGenerated(result.background))
+                result.background to events
+            }
+            is AgentResult.Error -> {
+                events.add(PipelineEvent.Error(result.message, result.cause))
+                null to events
+            }
+            else -> {
+                events.add(PipelineEvent.Error("Unexpected result type from background agent"))
+                null to events
+            }
+        }
+    }
 
     suspend fun generateOutline(
         novel: Novel,
+        revisionFeedback: String? = null,
     ): Pair<NovelOutline?, List<PipelineEvent>> {
         val events = mutableListOf<PipelineEvent>()
         events.add(PipelineEvent.Step("outline", "Generating outline for: ${novel.title}"))
@@ -64,6 +122,8 @@ class AgentPipeline(
             genre = novel.genre,
             themes = novel.themes,
             styleGuide = novel.styleGuide,
+            revisionFeedback = revisionFeedback,
+            previousOutline = novel.outline,
         )
 
         val result = outlineAgent.generate(input)
