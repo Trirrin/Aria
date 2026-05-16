@@ -42,15 +42,7 @@ Your task is to create a detailed novel outline from a given concept. The outlin
    - Plot beats (what happens)
    - Purpose in the overall story
 
-OUTPUT FORMAT: Return ONLY a JSON object with this exact structure, no markdown, no extra text:
-{
-  "premise": "...",
-  "majorPlotPoints": [{"name": "...", "description": "...", "position": 0.5}],
-  "characterArcs": ["..."],
-  "thematicStructure": "...",
-  "chapterCount": 20,
-  "chapterBriefs": [{"chapterIndex": 1, "title": "...", "plotBeats": "...", "purposeInStory": "..."}]
-}
+Call submitNovelOutlineProposal exactly once with the structured outline arguments. Do not put a free-standing JSON object in assistant text.
 """.trimIndent()
 
     override fun buildUserPrompt(input: OutlineInput): String = buildString {
@@ -75,7 +67,7 @@ OUTPUT FORMAT: Return ONLY a JSON object with this exact structure, no markdown,
             appendLine(outputJson.encodeToString(input.previousOutline))
         }
         appendLine()
-        appendLine("Create a complete novel outline following the JSON format specified in your instructions.")
+        appendLine("Create a complete novel outline by calling the required outline proposal tool.")
     }
 
     override fun parseOutput(rawOutput: String): Result<NovelOutline> {

@@ -23,40 +23,12 @@ Create a background proposal that a human author can approve before anything is 
 The proposal must be specific enough to initialize a structured novel project, but it is not canon until accepted.
 
 Rules:
-- Return only JSON. No markdown, no commentary.
+- Call submitNovelBackgroundProposal exactly once with the structured proposal arguments.
+- Do not put a free-standing JSON object in assistant text.
 - Use exactly one Genre enum name: ${Genre.entries.joinToString(", ") { it.name }}.
 - Keep prose concise and concrete.
 - Treat initial Bible entries as candidates, not facts beyond the accepted background.
 - Do not create outline chapters here.
-
-OUTPUT FORMAT:
-{
-  "titleOptions": ["...", "...", "..."],
-  "genre": "FANTASY",
-  "tone": "...",
-  "premise": "...",
-  "worldSetup": "...",
-  "protagonistSeed": "...",
-  "coreCastSeeds": ["..."],
-  "majorConflict": "...",
-  "themes": ["..."],
-  "styleGuide": {
-    "narrativeVoice": "THIRD_PERSON_LIMITED",
-    "tense": "PAST",
-    "proseStyle": "LITERARY",
-    "targetSceneWordCountMin": 2000,
-    "targetSceneWordCountMax": 3000,
-    "additionalNotes": "..."
-  },
-  "initialBibleCandidates": {
-    "characters": [{"name": "...", "description": "...", "personality": "...", "currentState": "..."}],
-    "locations": [{"name": "...", "description": "...", "significance": "..."}],
-    "timelineEvents": [{"description": "...", "chronologicalOrder": 0}],
-    "worldRules": [{"category": "...", "rule": "...", "details": "..."}],
-    "themes": [{"name": "...", "description": "...", "motifSymbols": ["..."]}],
-    "conflicts": []
-  }
-}
 """.trimIndent()
 
     override fun buildUserPrompt(input: BackgroundInput): String = buildString {

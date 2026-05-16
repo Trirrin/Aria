@@ -5,6 +5,8 @@ import com.trirrin.xiaoshuo.llm.LlmClient
 import com.trirrin.xiaoshuo.llm.LlmProvider
 import com.trirrin.xiaoshuo.llm.LlmRequest
 import com.trirrin.xiaoshuo.llm.LlmResponse
+import com.trirrin.xiaoshuo.llm.LlmToolCall
+import com.trirrin.xiaoshuo.llm.LlmToolChoice
 import com.trirrin.xiaoshuo.model.Chapter
 import com.trirrin.xiaoshuo.model.ChapterSynopsis
 import com.trirrin.xiaoshuo.model.Genre
@@ -13,6 +15,7 @@ import com.trirrin.xiaoshuo.model.NovelOutline
 import com.trirrin.xiaoshuo.model.PlotPoint
 import com.trirrin.xiaoshuo.model.Scene
 import com.trirrin.xiaoshuo.model.SceneBreakdown
+import com.trirrin.xiaoshuo.prompt.BackgroundInput
 import com.trirrin.xiaoshuo.prompt.OutlineInput
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
@@ -25,60 +28,25 @@ import org.junit.jupiter.api.Test
 
 class AgentPipelineTest {
     @Test
-    fun `outline agent keeps system prompt static and puts genre in user prompt`() = runTest {
-        val llm = QueueLlmClient(
-            """
-            {
-              "premise": "A courier steals a living map.",
-              "majorPlotPoints": [{"name": "Inciting Incident", "description": "Mira steals the map.", "position": 0.12}],
-              "characterArcs": [],
-              "thematicStructure": "Trust against control.",
-              "chapterCount": 1,
-              "chapterBriefs": [{"chapterIndex": 1, "title": "The Theft", "plotBeats": "Mira steals the map.", "purposeInStory": "Launch the story."}]
-            }
-            """.trimIndent(),
-        )
-        val agent = OutlineAgent(llmClient = llm, model = "creative-model")
+    fun `background agent requires background proposal tool call`() = runTest {
+        val llm = QueueLlmClient(toolResponse(SUBMIT_NOVEL_BACKGROUND_PROPOSAL, backgroundArguments()))
+        val agent = BackgroundAgent(llmClient = llm, model = "creative-model")
 
         val result = agent.generate(
-            OutlineInput(
-                concept = "A courier steals a living map.",
-                genre = Genre.FANTASY,
-                themes = listOf("trust"),
-                styleGuide = com.trirrin.xiaoshuo.model.StyleGuide(),
-            ),
+            BackgroundInput(userRequest = "A courier steals a living map."),
         )
 
-        assertTrue(result is AgentResult.OutlineResult)
-        assertFalse(llm.requests.single().systemPrompt.contains("Fantasy"))
-        assertFalse(llm.requests.single().systemPrompt.contains("$" + "GENRE"))
-        assertTrue(llm.requests.single().messages.single().content.contains("GENRE: Fantasy"))
-        assertTrue(llm.requests.single().cacheableSystemPrompt)
+        val background = result as AgentResult.BackgroundResult
+        val request = llm.requests.single()
+        assertEquals("Ash Map", background.background.titleOptions.single())
+        assertEquals(listOf(SUBMIT_NOVEL_BACKGROUND_PROPOSAL), request.tools.map { it.name })
+        assertEquals(LlmToolChoice.Named(SUBMIT_NOVEL_BACKGROUND_PROPOSAL), request.toolChoice)
+        assertTrue(request.cacheableSystemPrompt)
     }
 
     @Test
-    fun `outline agent repairs malformed json once`() = runTest {
-        val llm = QueueLlmClient(
-            """
-            {
-              "premise": "A courier steals a living map.",
-              "majorPlotPoints": [{"name": "Inciting Incident", "description": "Mira steals the map.", "position": 0.12}],
-              "characterArcs": [],
-              "thematicStructure": "Trust against control.",
-              "chapterCount": 1,
-              "chapterBriefs": [{"chapterIndex": 1, "title": "The Theft", "plotBeats": "Mira steals the map.", "purposeInStory": "Launch the story."}]
-            """.trimIndent(),
-            """
-            {
-              "premise": "A courier steals a living map.",
-              "majorPlotPoints": [{"name": "Inciting Incident", "description": "Mira steals the map.", "position": 0.12}],
-              "characterArcs": [],
-              "thematicStructure": "Trust against control.",
-              "chapterCount": 1,
-              "chapterBriefs": [{"chapterIndex": 1, "title": "The Theft", "plotBeats": "Mira steals the map.", "purposeInStory": "Launch the story."}]
-            }
-            """.trimIndent(),
-        )
+    fun `outline agent requires outline proposal tool call`() = runTest {
+        val llm = QueueLlmClient(toolResponse(SUBMIT_NOVEL_OUTLINE_PROPOSAL, outlineArguments()))
         val agent = OutlineAgent(llmClient = llm, model = "creative-model")
 
         val result = agent.generate(
@@ -91,11 +59,33 @@ class AgentPipelineTest {
         )
 
         val outline = result as AgentResult.OutlineResult
+        val request = llm.requests.single()
         assertEquals("The Theft", outline.outline.chapterBriefs.single().title)
-        assertEquals(2, llm.requests.size)
-        assertTrue(llm.requests.last().systemPrompt.contains("Repair malformed JSON output"))
-        assertEquals(20, outline.usage?.inputTokens)
-        assertEquals(40, outline.usage?.outputTokens)
+        assertFalse(request.systemPrompt.contains("Fantasy"))
+        assertFalse(request.systemPrompt.contains("$" + "GENRE"))
+        assertTrue(request.messages.single().content.contains("GENRE: Fantasy"))
+        assertEquals(listOf(SUBMIT_NOVEL_OUTLINE_PROPOSAL), request.tools.map { it.name })
+        assertEquals(LlmToolChoice.Named(SUBMIT_NOVEL_OUTLINE_PROPOSAL), request.toolChoice)
+        assertTrue(request.cacheableSystemPrompt)
+    }
+
+    @Test
+    fun `outline agent rejects assistant text json instead of repairing it`() = runTest {
+        val llm = QueueLlmClient(outlineArguments())
+        val agent = OutlineAgent(llmClient = llm, model = "creative-model")
+
+        val result = agent.generate(
+            OutlineInput(
+                concept = "A courier steals a living map.",
+                genre = Genre.FANTASY,
+                themes = listOf("trust"),
+                styleGuide = com.trirrin.xiaoshuo.model.StyleGuide(),
+            ),
+        )
+
+        val error = result as AgentResult.Error
+        assertTrue(error.message.contains("exactly one tool call"))
+        assertEquals(1, llm.requests.size)
     }
 
     @Test
@@ -393,28 +383,98 @@ class AgentPipelineTest {
     }
 }
 
-private class QueueLlmClient(vararg responses: String) : LlmClient {
-    private val queuedResponses = ArrayDeque(responses.toList())
+private fun toolResponse(functionName: String, argumentsJson: String): LlmResponse {
+    return LlmResponse(
+        content = "",
+        inputTokens = 10,
+        outputTokens = 20,
+        finishReason = "tool_calls",
+        model = "test-model",
+        toolCalls = listOf(
+            LlmToolCall(
+                id = "tool-call-1",
+                name = functionName,
+                argumentsJson = argumentsJson,
+            ),
+        ),
+    )
+}
+
+private fun outlineArguments(): String = """
+{
+  "premise": "A courier steals a living map.",
+  "majorPlotPoints": [{"name": "Inciting Incident", "description": "Mira steals the map.", "position": 0.12}],
+  "characterArcs": [],
+  "thematicStructure": "Trust against control.",
+  "chapterCount": 1,
+  "chapterBriefs": [{"chapterIndex": 1, "title": "The Theft", "plotBeats": "Mira steals the map.", "purposeInStory": "Launch the story."}]
+}
+""".trimIndent()
+
+private fun backgroundArguments(): String = """
+{
+  "titleOptions": ["Ash Map"],
+  "genre": "FANTASY",
+  "tone": "urgent and mythic",
+  "premise": "A courier steals a living map.",
+  "worldSetup": "A city built over old roads that still remember their dead.",
+  "protagonistSeed": "Mira is a courier who trusts routes more than people.",
+  "coreCastSeeds": ["A cartographer who can hear roads."],
+  "majorConflict": "Mira must decide whether to sell the living map or follow it.",
+  "themes": ["trust"],
+  "styleGuide": {
+    "narrativeVoice": "THIRD_PERSON_LIMITED",
+    "tense": "PAST",
+    "proseStyle": "LITERARY",
+    "targetSceneWordCountMin": 2000,
+    "targetSceneWordCountMax": 3000,
+    "additionalNotes": "Keep images concrete."
+  },
+  "initialBibleCandidates": {
+    "characters": [{"name": "Mira", "description": "A courier", "personality": "defiant", "currentState": "carrying the map"}],
+    "locations": [],
+    "timelineEvents": [],
+    "worldRules": [],
+    "themes": [],
+    "conflicts": []
+  }
+}
+""".trimIndent()
+
+private class QueueLlmClient : LlmClient {
+    private val queuedResponses: ArrayDeque<LlmResponse>
     val requests = mutableListOf<LlmRequest>()
+
+    constructor(vararg responses: String) {
+        queuedResponses = ArrayDeque(
+            responses.map { content ->
+                LlmResponse(
+                    content = content,
+                    inputTokens = 10,
+                    outputTokens = 20,
+                    finishReason = "stop",
+                    model = "test-model",
+                )
+            },
+        )
+    }
+
+    constructor(vararg responses: LlmResponse) {
+        queuedResponses = ArrayDeque(responses.toList())
+    }
 
     override val provider: LlmProvider = LlmProvider.OPENAI
 
     override suspend fun complete(request: LlmRequest): LlmResponse {
         requests.add(request)
-        return LlmResponse(
-            content = queuedResponses.removeFirst(),
-            inputTokens = 10,
-            outputTokens = 20,
-            finishReason = "stop",
-            model = request.model,
-        )
+        return queuedResponses.removeFirst().copy(model = request.model)
     }
 
     override fun stream(request: LlmRequest): Flow<LlmChunk> {
         requests.add(request)
         return flowOf(
             LlmChunk(
-                delta = queuedResponses.removeFirst(),
+                delta = queuedResponses.removeFirst().content,
                 inputTokens = 10,
                 outputTokens = 20,
                 isComplete = true,
