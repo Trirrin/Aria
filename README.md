@@ -1,5 +1,7 @@
 # Aria (咏叹)
 
+[中文](README_zh.md)
+
 An Android app for writing long-form fiction with AI—without reducing the workflow to a fragile chat transcript.
 
 Aria is a structured writing workbench built around bounded context windows, hierarchical writing agents, user-editable story artifacts, and a persistent Novel Bible for continuity.
