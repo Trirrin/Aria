@@ -6,9 +6,12 @@ import com.trirrin.xiaoshuo.agent.AgentResult
 import com.trirrin.xiaoshuo.agent.ChapterSynopsisPipelineResult
 import com.trirrin.xiaoshuo.agent.PipelineEvent
 import com.trirrin.xiaoshuo.agent.WorkflowToolCall
+import com.trirrin.xiaoshuo.data.ConversationSessionRecord
 import com.trirrin.xiaoshuo.data.GenerationSettings
 import com.trirrin.xiaoshuo.data.GenerationSettingsRepository
 import com.trirrin.xiaoshuo.data.NovelRepository
+import com.trirrin.xiaoshuo.data.PendingApprovalRecord
+import com.trirrin.xiaoshuo.data.ToolCallAuditRecord
 import com.trirrin.xiaoshuo.model.Chapter
 import com.trirrin.xiaoshuo.model.ChapterBrief
 import com.trirrin.xiaoshuo.model.ChapterStatus
@@ -35,6 +38,11 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -62,6 +70,8 @@ class NovelWorkspaceViewModelTest {
     private lateinit var scenes: MutableStateFlow<List<Scene>>
     private lateinit var allScenes: MutableStateFlow<List<Scene>>
     private lateinit var settings: MutableStateFlow<GenerationSettings>
+    private lateinit var conversationSessions: MutableStateFlow<List<ConversationSessionRecord>>
+    private lateinit var pendingApprovals: MutableStateFlow<List<PendingApprovalRecord>>
     private lateinit var generationCoordinator: GenerationCoordinator
 
     @Before
@@ -75,6 +85,8 @@ class NovelWorkspaceViewModelTest {
         scenes = MutableStateFlow(emptyList())
         allScenes = MutableStateFlow(emptyList())
         settings = MutableStateFlow(GenerationSettings(apiKey = "test-key"))
+        conversationSessions = MutableStateFlow(emptyList())
+        pendingApprovals = MutableStateFlow(emptyList())
         generationCoordinator = GenerationCoordinator(TestScope(dispatcher))
 
         every { novelRepository.observeNovels() } returns novels
@@ -83,11 +95,26 @@ class NovelWorkspaceViewModelTest {
         every { novelRepository.observeScenesForNovel(any()) } returns allScenes
         every { novelRepository.observeRevisionSnapshots(any()) } returns flowOf(emptyList())
         every { novelRepository.observeTokenUsage(any()) } returns flowOf(emptyList())
+        every { novelRepository.observeConversationSessions() } returns conversationSessions
+        every { novelRepository.observePendingApprovals() } returns pendingApprovals
         every { settingsRepository.settings } returns settings
         coEvery { novelRepository.resetInterruptedScenes() } returns 0
         coEvery { novelRepository.getChapters(any()) } returns emptyList()
         coEvery { novelRepository.getScenes(any()) } returns emptyList()
         coEvery { novelRepository.getNovel(any()) } answers { novels.value.firstOrNull { it.id == firstArg<String>() } }
+        coEvery { novelRepository.saveConversationSession(any()) } answers {
+            val record = firstArg<ConversationSessionRecord>()
+            conversationSessions.value = listOf(record)
+        }
+        coEvery { novelRepository.savePendingApproval(any()) } answers {
+            val record = firstArg<PendingApprovalRecord>()
+            pendingApprovals.value = listOf(record)
+        }
+        coEvery { novelRepository.deletePendingApproval(any()) } answers {
+            val id = firstArg<String>()
+            pendingApprovals.value = pendingApprovals.value.filterNot { it.id == id }
+        }
+        coEvery { novelRepository.saveToolCallAudit(any()) } returns Unit
     }
 
     @After
@@ -385,12 +412,22 @@ class NovelWorkspaceViewModelTest {
         )
         val savedScenes = mutableListOf<Scene>()
         val savedNovels = mutableListOf<Novel>()
+        val savedApprovals = mutableListOf<PendingApprovalRecord>()
+        val deletedApprovalIds = mutableListOf<String>()
+        val savedAudits = mutableListOf<ToolCallAuditRecord>()
         coEvery { novelRepository.upsertScene(capture(savedScenes)) } answers {
             scenes.value = listOf(savedScenes.last())
         }
         coEvery { novelRepository.upsertNovel(capture(savedNovels)) } answers {
             novels.value = listOf(savedNovels.last())
         }
+        coEvery { novelRepository.savePendingApproval(capture(savedApprovals)) } answers {
+            pendingApprovals.value = listOf(savedApprovals.last())
+        }
+        coEvery { novelRepository.deletePendingApproval(capture(deletedApprovalIds)) } answers {
+            pendingApprovals.value = pendingApprovals.value.filterNot { it.id == deletedApprovalIds.last() }
+        }
+        coEvery { novelRepository.saveToolCallAudit(capture(savedAudits)) } returns Unit
         val viewModel = createViewModel()
 
         viewModel.uiState.test {
@@ -409,11 +446,78 @@ class NovelWorkspaceViewModelTest {
             assertEquals(SceneStatus.REVIEWED, savedScenes.single().status)
             assertTrue(savedNovels.isEmpty())
             assertEquals(ApprovalTargetType.BIBLE_UPDATE, canonPending.conversation.pendingApproval?.targetType)
+            assertEquals(ApprovalTargetType.BIBLE_UPDATE.name, savedApprovals.last().targetType)
+            assertTrue(deletedApprovalIds.isNotEmpty())
+            assertTrue(savedAudits.any { it.functionName == "generateSceneTextProposal" && it.resultStatus == "planned" })
 
             viewModel.acceptPendingApproval()
             skipItemsUntil { it.conversation.pendingApproval == null && savedNovels.isNotEmpty() }
 
+            assertTrue(pendingApprovals.value.isEmpty())
             assertEquals("Mira", savedNovels.single().bible.characters.single().name)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `restores persisted conversation approval on startup`() = runTestWithMain {
+        val novel = sampleNovel(outline = sampleOutline())
+        novels.value = listOf(novel)
+        val chapter = sampleChapter(novel.id, synopsis = sampleSynopsis())
+        val scene = sampleScene(novel.id, chapter.id)
+        chapters.value = listOf(chapter)
+        scenes.value = listOf(scene)
+        allScenes.value = listOf(scene)
+        val approval = PendingApproval(
+            novelId = novel.id,
+            targetType = ApprovalTargetType.SCENE_TEXT,
+            targetId = scene.id,
+            actionName = "acceptSceneTextProposal",
+            previewTitle = "Scene 1: Chapter 1",
+            previewText = "Scene Draft\nrestored prose",
+            riskLevel = ApprovalRiskLevel.MEDIUM,
+            requiredBeforeCommit = true,
+            payload = ApprovalPayload.SceneText(
+                novelId = novel.id,
+                chapterId = chapter.id,
+                sceneId = scene.id,
+                chapterOrder = 1,
+                sceneOrder = 1,
+                text = "restored prose",
+                wordCount = 2,
+                reviewReport = null,
+                proposedBible = null,
+            ),
+        )
+        pendingApprovals.value = listOf(
+            PendingApprovalRecord(
+                id = approval.id,
+                novelId = approval.novelId,
+                targetType = approval.targetType.name,
+                targetId = approval.targetId,
+                actionName = approval.actionName,
+                previewTitle = approval.previewTitle,
+                previewText = approval.previewText,
+                proposedPayloadJson = savedApprovalJson(approval),
+                riskLevel = approval.riskLevel.name,
+                requiredBeforeCommit = approval.requiredBeforeCommit,
+                createdAt = approval.createdAt,
+            ),
+        )
+        conversationSessions.value = listOf(
+            ConversationSessionRecord(
+                id = "session-1",
+                novelId = novel.id,
+                messagesJson = savedMessagesJson(),
+            ),
+        )
+        val restored = createViewModel()
+
+        restored.uiState.test {
+            advanceUntilIdle()
+            val state = skipItemsUntil { it.conversation.pendingApproval?.id == approval.id }
+
+            assertEquals("restored prose", (state.conversation.pendingApproval?.payload as ApprovalPayload.SceneText).text)
             cancelAndIgnoreRemainingEvents()
         }
     }
@@ -457,6 +561,38 @@ class NovelWorkspaceViewModelTest {
             if (predicate(item)) return item
         }
         throw AssertionError("Expected UI state was not emitted")
+    }
+
+    private fun savedMessagesJson(): String {
+        return Json.encodeToString(listOf(ConversationMessage(ConversationRole.USER, "restore me")))
+    }
+
+    private fun savedApprovalJson(approval: PendingApproval): String {
+        val sceneText = approval.payload as ApprovalPayload.SceneText
+        return Json.encodeToString(
+            JsonObject(
+                mapOf(
+                    "type" to JsonPrimitive("SCENE_TEXT"),
+                    "background" to JsonNull,
+                    "outline" to JsonNull,
+                    "chapterSynopsis" to JsonNull,
+                    "sceneText" to JsonObject(
+                        mapOf(
+                            "novelId" to JsonPrimitive(sceneText.novelId),
+                            "chapterId" to JsonPrimitive(sceneText.chapterId),
+                            "sceneId" to JsonPrimitive(sceneText.sceneId),
+                            "chapterOrder" to JsonPrimitive(sceneText.chapterOrder),
+                            "sceneOrder" to JsonPrimitive(sceneText.sceneOrder),
+                            "text" to JsonPrimitive(sceneText.text),
+                            "wordCount" to JsonPrimitive(sceneText.wordCount),
+                            "reviewReport" to JsonNull,
+                            "proposedBible" to JsonNull,
+                        ),
+                    ),
+                    "bibleUpdate" to JsonNull,
+                ),
+            ),
+        )
     }
 
     private fun sampleNovel(outline: NovelOutline? = null): Novel {

@@ -10,11 +10,14 @@ import com.trirrin.xiaoshuo.agent.ConversationPlanInput
 import com.trirrin.xiaoshuo.agent.WorkflowToolCall
 import com.trirrin.xiaoshuo.agent.AgentResult
 import com.trirrin.xiaoshuo.agent.PipelineEvent
+import com.trirrin.xiaoshuo.data.ConversationSessionRecord
 import com.trirrin.xiaoshuo.data.GenerationSettings
 import com.trirrin.xiaoshuo.data.GenerationSettingsRepository
 import com.trirrin.xiaoshuo.data.NovelRepository
+import com.trirrin.xiaoshuo.data.PendingApprovalRecord
 import com.trirrin.xiaoshuo.data.RevisionSnapshot
 import com.trirrin.xiaoshuo.data.TokenUsageRecord
+import com.trirrin.xiaoshuo.data.ToolCallAuditRecord
 import com.trirrin.xiaoshuo.model.BibleConflict
 import com.trirrin.xiaoshuo.model.BibleConflictSection
 import com.trirrin.xiaoshuo.model.BibleEntrySource
@@ -53,6 +56,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
@@ -61,6 +65,7 @@ import kotlinx.coroutines.launch
 import kotlinx.datetime.Clock
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -77,7 +82,9 @@ class NovelWorkspaceViewModel(
 ) : ViewModel() {
     private val json = Json { encodeDefaults = true; ignoreUnknownKeys = true }
     private val workflow = generationCoordinator.workflow
-    private val conversation = MutableStateFlow(ConversationState())
+    private val conversationSessionId = UUID.randomUUID().toString()
+    private val conversationCreatedAt = Clock.System.now()
+    private val conversation = MutableStateFlow(ConversationState(sessionId = conversationSessionId))
     private val selectedNovelId = MutableStateFlow<String?>(null)
     private val selectedChapterId = MutableStateFlow<String?>(null)
     private val selectedSceneId = MutableStateFlow<String?>(null)
@@ -85,6 +92,7 @@ class NovelWorkspaceViewModel(
 
     init {
         viewModelScope.launch {
+            restoreConversationState()
             val recovered = novelRepository.resetInterruptedScenes()
             if (recovered > 0) {
                 appendEvent("Recovered $recovered interrupted scene drafts")
@@ -242,9 +250,10 @@ class NovelWorkspaceViewModel(
             appendConversation(ConversationRole.ASSISTANT, "No proposal is waiting for rejection.")
             return
         }
-        conversation.update { it.copy(pendingApproval = null) }
+        clearPendingApproval(approval)
         appendConversation(ConversationRole.ASSISTANT, "Rejected ${approval.previewTitle}. Nothing was saved.")
         appendEvent("Proposal rejected")
+        auditToolCall("rejectPendingApproval", "approval=${approval.targetType}", "rejected", approval.previewTitle)
     }
 
     fun revisePendingApproval(feedback: String) {
@@ -939,6 +948,9 @@ class NovelWorkspaceViewModel(
                 )
                 events.forEach { recordPipelineEvent(novel?.id, settings, it) }
                 plannedTool = toolCall ?: error("Conversation agent did not choose a tool")
+                plannedTool?.let { tool ->
+                    auditToolCall(tool.name, tool.argumentsJson.summaryForAudit(), "planned", "Conversation tool selected")
+                }
             } catch (error: CancellationException) {
                 appendEvent("Conversation planning cancelled")
             } catch (error: Exception) {
@@ -1019,7 +1031,7 @@ class NovelWorkspaceViewModel(
                     requiredBeforeCommit = true,
                     payload = ApprovalPayload.Background(userRequest, generated),
                 )
-                conversation.update { it.copy(pendingApproval = approval) }
+                setPendingApproval(approval)
                 appendConversation(ConversationRole.ASSISTANT, "I drafted a background proposal. Review it, then accept, reject, or request a revision.")
                 appendEvent("Background proposal ready")
             } catch (error: CancellationException) {
@@ -1068,7 +1080,7 @@ class NovelWorkspaceViewModel(
                     requiredBeforeCommit = true,
                     payload = ApprovalPayload.Outline(novel.id, generated),
                 )
-                conversation.update { it.copy(pendingApproval = approval) }
+                setPendingApproval(approval)
                 appendConversation(ConversationRole.ASSISTANT, "I drafted an outline proposal. It is only a proposal until you accept it.")
                 appendEvent("Outline proposal ready")
             } catch (error: CancellationException) {
@@ -1110,27 +1122,25 @@ class NovelWorkspaceViewModel(
                 val generated = result.synopsis ?: error("Chapter plan generation failed")
                 val reviewReport = result.review?.toReport(0)
                 val risk = if (chapter.synopsis == null) ApprovalRiskLevel.MEDIUM else ApprovalRiskLevel.HIGH
-                conversation.update {
-                    it.copy(
-                        pendingApproval = PendingApproval(
+                setPendingApproval(
+                    PendingApproval(
+                        novelId = novel.id,
+                        targetType = ApprovalTargetType.CHAPTER_SYNOPSIS,
+                        targetId = chapter.id,
+                        actionName = "acceptChapterSynopsisProposal",
+                        previewTitle = "Chapter ${chapter.order}: ${chapter.title.ifBlank { "Chapter Plan" }}",
+                        previewText = generated.toPreviewText(reviewReport),
+                        riskLevel = risk,
+                        requiredBeforeCommit = true,
+                        payload = ApprovalPayload.ChapterSynopsis(
                             novelId = novel.id,
-                            targetType = ApprovalTargetType.CHAPTER_SYNOPSIS,
-                            targetId = chapter.id,
-                            actionName = "acceptChapterSynopsisProposal",
-                            previewTitle = "Chapter ${chapter.order}: ${chapter.title.ifBlank { "Chapter Plan" }}",
-                            previewText = generated.toPreviewText(reviewReport),
-                            riskLevel = risk,
-                            requiredBeforeCommit = true,
-                            payload = ApprovalPayload.ChapterSynopsis(
-                                novelId = novel.id,
-                                chapterId = chapter.id,
-                                chapterOrder = chapter.order,
-                                synopsis = generated,
-                                reviewReport = reviewReport,
-                            ),
+                            chapterId = chapter.id,
+                            chapterOrder = chapter.order,
+                            synopsis = generated,
+                            reviewReport = reviewReport,
                         ),
-                    )
-                }
+                    ),
+                )
                 appendConversation(ConversationRole.ASSISTANT, "I drafted a chapter plan proposal. Nothing is saved until you accept it.")
                 appendEvent("Chapter plan proposal ready")
             } catch (error: CancellationException) {
@@ -1196,31 +1206,29 @@ class NovelWorkspaceViewModel(
                 }
                 require(generatedText.isNotBlank()) { "Scene generation returned no text" }
                 val risk = if (scene.text.isBlank()) ApprovalRiskLevel.MEDIUM else ApprovalRiskLevel.HIGH
-                conversation.update {
-                    it.copy(
-                        pendingApproval = PendingApproval(
+                setPendingApproval(
+                    PendingApproval(
+                        novelId = novel.id,
+                        targetType = ApprovalTargetType.SCENE_TEXT,
+                        targetId = scene.id,
+                        actionName = "acceptSceneTextProposal",
+                        previewTitle = "Scene ${scene.order}: Chapter ${chapter.order}",
+                        previewText = generatedText.toScenePreviewText(reviewReport),
+                        riskLevel = risk,
+                        requiredBeforeCommit = true,
+                        payload = ApprovalPayload.SceneText(
                             novelId = novel.id,
-                            targetType = ApprovalTargetType.SCENE_TEXT,
-                            targetId = scene.id,
-                            actionName = "acceptSceneTextProposal",
-                            previewTitle = "Scene ${scene.order}: Chapter ${chapter.order}",
-                            previewText = generatedText.toScenePreviewText(reviewReport),
-                            riskLevel = risk,
-                            requiredBeforeCommit = true,
-                            payload = ApprovalPayload.SceneText(
-                                novelId = novel.id,
-                                chapterId = chapter.id,
-                                sceneId = scene.id,
-                                chapterOrder = chapter.order,
-                                sceneOrder = scene.order,
-                                text = generatedText,
-                                wordCount = generatedWordCount,
-                                reviewReport = reviewReport,
-                                proposedBible = proposedBible,
-                            ),
+                            chapterId = chapter.id,
+                            sceneId = scene.id,
+                            chapterOrder = chapter.order,
+                            sceneOrder = scene.order,
+                            text = generatedText,
+                            wordCount = generatedWordCount,
+                            reviewReport = reviewReport,
+                            proposedBible = proposedBible,
                         ),
-                    )
-                }
+                    ),
+                )
                 appendConversation(ConversationRole.ASSISTANT, "I drafted a scene proposal. Review it before saving it as scene text.")
                 appendEvent("Scene draft proposal ready")
             } catch (error: CancellationException) {
@@ -1245,7 +1253,8 @@ class NovelWorkspaceViewModel(
 
     private fun reviseApproval(approval: PendingApproval, feedback: String) {
         appendConversation(ConversationRole.USER, "Revision request: $feedback")
-        conversation.update { it.copy(pendingApproval = null) }
+        clearPendingApproval(approval)
+        auditToolCall("revisePendingApproval", "approval=${approval.targetType}", "revision_requested", feedback.take(160))
         when (val payload = approval.payload) {
             is ApprovalPayload.Background -> generateBackgroundProposal(
                 userRequest = payload.userRequest,
@@ -1269,7 +1278,6 @@ class NovelWorkspaceViewModel(
                 revisionFeedback = feedback,
             )
             is ApprovalPayload.BibleUpdate -> {
-                conversation.update { it.copy(pendingApproval = null) }
                 appendConversation(ConversationRole.ASSISTANT, "Bible update revisions are not generated directly. Revise the accepted scene text, then request a new canon update.")
             }
         }
@@ -1283,7 +1291,7 @@ class NovelWorkspaceViewModel(
             selectedNovelId.value = novel.id
             selectedChapterId.value = null
             selectedSceneId.value = null
-            conversation.update { it.copy(pendingApproval = null) }
+            clearCurrentPendingApproval()
             appendConversation(ConversationRole.ASSISTANT, "Accepted background and saved ${novel.title}. I will draft an outline proposal next.")
             appendEvent("Accepted background proposal")
             generateOutlineProposal(novel.id)
@@ -1312,7 +1320,7 @@ class NovelWorkspaceViewModel(
             selectedNovelId.value = novel.id
             selectedChapterId.value = chapters.firstOrNull { it.order == outline.chapterBriefs.firstOrNull()?.chapterIndex }?.id
             selectedSceneId.value = null
-            conversation.update { it.copy(pendingApproval = null) }
+            clearCurrentPendingApproval()
             appendConversation(ConversationRole.ASSISTANT, "Accepted outline and created ${chapters.size} chapter shell(s).")
             appendEvent("Accepted outline proposal")
         }
@@ -1339,7 +1347,7 @@ class NovelWorkspaceViewModel(
             selectedNovelId.value = payload.novelId
             selectedChapterId.value = chapter.id
             selectedSceneId.value = novelRepository.getScenes(chapter.id).firstOrNull()?.id
-            conversation.update { it.copy(pendingApproval = null) }
+            clearCurrentPendingApproval()
             appendConversation(ConversationRole.ASSISTANT, "Accepted chapter plan and created ${payload.synopsis.sceneBreakdowns.size} scene shell(s).")
             appendEvent("Accepted chapter plan proposal")
         }
@@ -1369,24 +1377,22 @@ class NovelWorkspaceViewModel(
             selectedSceneId.value = payload.sceneId
             val proposedBible = payload.proposedBible
             if (proposedBible != null) {
-                conversation.update {
-                    it.copy(
-                        pendingApproval = PendingApproval(
-                            novelId = payload.novelId,
-                            targetType = ApprovalTargetType.BIBLE_UPDATE,
-                            targetId = payload.sceneId,
-                            actionName = "acceptBibleUpdate",
-                            previewTitle = "Canon Update From Scene ${payload.sceneOrder}",
-                            previewText = proposedBible.toPreviewText(),
-                            riskLevel = ApprovalRiskLevel.HIGH,
-                            requiredBeforeCommit = true,
-                            payload = ApprovalPayload.BibleUpdate(payload.novelId, proposedBible),
-                        ),
-                    )
-                }
+                setPendingApproval(
+                    PendingApproval(
+                        novelId = payload.novelId,
+                        targetType = ApprovalTargetType.BIBLE_UPDATE,
+                        targetId = payload.sceneId,
+                        actionName = "acceptBibleUpdate",
+                        previewTitle = "Canon Update From Scene ${payload.sceneOrder}",
+                        previewText = proposedBible.toPreviewText(),
+                        riskLevel = ApprovalRiskLevel.HIGH,
+                        requiredBeforeCommit = true,
+                        payload = ApprovalPayload.BibleUpdate(payload.novelId, proposedBible),
+                    ),
+                )
                 appendConversation(ConversationRole.ASSISTANT, "Accepted scene text. I prepared a separate canon update proposal for review.")
             } else {
-                conversation.update { it.copy(pendingApproval = null) }
+                clearCurrentPendingApproval()
                 appendConversation(ConversationRole.ASSISTANT, "Accepted scene text. No canon update was proposed.")
             }
             appendEvent("Accepted scene text proposal")
@@ -1401,7 +1407,7 @@ class NovelWorkspaceViewModel(
             }
             saveSnapshot(novel.id, SNAPSHOT_BIBLE, novel.id, "Bible before proposal acceptance", novel.bible)
             novelRepository.upsertNovel(novel.copy(bible = payload.bible, updatedAt = Clock.System.now()))
-            conversation.update { it.copy(pendingApproval = null) }
+            clearCurrentPendingApproval()
             appendConversation(ConversationRole.ASSISTANT, "Accepted canon update and saved it to the Novel Bible.")
             appendEvent("Accepted Bible update proposal")
         }
@@ -1577,6 +1583,78 @@ class NovelWorkspaceViewModel(
         appendEvent("Overwrite confirmation required")
     }
 
+    private suspend fun restoreConversationState() {
+        val session = novelRepository.observeConversationSessions().firstOrNull()?.firstOrNull()
+        val restoredMessages = session?.messagesJson?.let { messagesJson ->
+            runCatching { json.decodeFromString<List<ConversationMessage>>(messagesJson) }.getOrNull()
+        }
+        val approval = novelRepository.observePendingApprovals().firstOrNull()
+            ?.firstOrNull()
+            ?.toPendingApproval(json)
+        if (session != null || restoredMessages != null || approval != null) {
+            conversation.value = ConversationState(
+                sessionId = session?.id ?: conversationSessionId,
+                messages = restoredMessages?.takeLast(80).orEmpty().ifEmpty { ConversationState(sessionId = session?.id ?: conversationSessionId).messages },
+                pendingApproval = approval,
+                createdAt = session?.createdAt ?: conversationCreatedAt,
+            )
+            selectedNovelId.value = approval?.novelId ?: session?.novelId
+            appendEvent("Restored conversation session")
+        }
+    }
+
+    private fun setPendingApproval(approval: PendingApproval) {
+        val previousApproval = conversation.value.pendingApproval
+        conversation.update { state -> state.copy(pendingApproval = approval) }
+        viewModelScope.launch {
+            if (previousApproval != null && previousApproval.id != approval.id) {
+                novelRepository.deletePendingApproval(previousApproval.id)
+            }
+            novelRepository.savePendingApproval(approval.toRecord(json))
+        }
+        persistConversationSession()
+        auditToolCall(approval.actionName, "proposal=${approval.targetType}", "pending", approval.previewTitle)
+    }
+
+    private fun clearPendingApproval(approval: PendingApproval) {
+        conversation.update { state ->
+            if (state.pendingApproval?.id == approval.id) state.copy(pendingApproval = null) else state
+        }
+        viewModelScope.launch { novelRepository.deletePendingApproval(approval.id) }
+        persistConversationSession()
+    }
+
+    private fun clearCurrentPendingApproval() {
+        val approval = conversation.value.pendingApproval
+        conversation.update { state -> state.copy(pendingApproval = null) }
+        approval?.let { viewModelScope.launch { novelRepository.deletePendingApproval(it.id) } }
+        persistConversationSession()
+        approval?.let { auditToolCall(it.actionName, "approval=${it.targetType}", "accepted", it.previewTitle) }
+    }
+
+    private fun persistConversationSession() {
+        val state = conversation.value
+        viewModelScope.launch {
+            novelRepository.saveConversationSession(state.toRecord(json))
+        }
+    }
+
+    private fun auditToolCall(functionName: String, argumentSummary: String, resultStatus: String, resultMessage: String) {
+        val state = conversation.value
+        viewModelScope.launch {
+            novelRepository.saveToolCallAudit(
+                ToolCallAuditRecord(
+                    sessionId = state.sessionId,
+                    novelId = state.pendingApproval?.novelId ?: selectedNovelId.value,
+                    functionName = functionName,
+                    argumentSummary = argumentSummary.take(240),
+                    resultStatus = resultStatus,
+                    resultMessage = resultMessage.take(240),
+                ),
+            )
+        }
+    }
+
     private suspend fun recordPipelineEvent(novelId: String?, settings: GenerationSettings, event: PipelineEvent) {
         appendPipelineEvent(event)
         if (event is PipelineEvent.UsageRecorded && novelId != null) {
@@ -1677,6 +1755,7 @@ class NovelWorkspaceViewModel(
                 messages = (state.messages + ConversationMessage(role = role, text = text)).takeLast(80),
             )
         }
+        persistConversationSession()
     }
 
     private fun setError(message: String) {
@@ -2377,6 +2456,180 @@ private fun StringBuilder.appendSection(title: String, body: String) {
     appendLine(body)
 }
 
+private fun ConversationState.toRecord(json: Json): ConversationSessionRecord {
+    return ConversationSessionRecord(
+        id = sessionId,
+        novelId = pendingApproval?.novelId,
+        messagesJson = json.encodeToString(messages),
+        activeToolCallJson = pendingApproval?.let { json.encodeToString(it.toEnvelope()) },
+        createdAt = createdAt,
+        updatedAt = Clock.System.now(),
+    )
+}
+
+private fun PendingApproval.toRecord(json: Json): PendingApprovalRecord {
+    return PendingApprovalRecord(
+        id = id,
+        novelId = novelId,
+        targetType = targetType.name,
+        targetId = targetId,
+        actionName = actionName,
+        previewTitle = previewTitle,
+        previewText = previewText,
+        proposedPayloadJson = json.encodeToString(toEnvelope()),
+        riskLevel = riskLevel.name,
+        requiredBeforeCommit = requiredBeforeCommit,
+        createdAt = createdAt,
+    )
+}
+
+private fun PendingApprovalRecord.toPendingApproval(json: Json): PendingApproval? {
+    val envelope = runCatching { json.decodeFromString<PersistedApprovalEnvelope>(proposedPayloadJson) }.getOrNull() ?: return null
+    return runCatching {
+        PendingApproval(
+            id = id,
+            novelId = novelId,
+            targetId = targetId,
+            targetType = enumValueOf(targetType),
+            actionName = actionName,
+            previewTitle = previewTitle,
+            previewText = previewText,
+            riskLevel = enumValueOf(riskLevel),
+            requiredBeforeCommit = requiredBeforeCommit,
+            payload = envelope.toPayload(),
+            createdAt = createdAt,
+        )
+    }.getOrNull()
+}
+
+private fun PendingApproval.toEnvelope(): PersistedApprovalEnvelope {
+    return when (val value = payload) {
+        is ApprovalPayload.Background -> PersistedApprovalEnvelope(
+            type = ApprovalPayloadType.BACKGROUND,
+            background = PersistedBackgroundPayload(value.userRequest, value.proposal),
+        )
+        is ApprovalPayload.Outline -> PersistedApprovalEnvelope(
+            type = ApprovalPayloadType.OUTLINE,
+            outline = PersistedOutlinePayload(value.novelId, value.outline),
+        )
+        is ApprovalPayload.ChapterSynopsis -> PersistedApprovalEnvelope(
+            type = ApprovalPayloadType.CHAPTER_SYNOPSIS,
+            chapterSynopsis = PersistedChapterSynopsisPayload(
+                novelId = value.novelId,
+                chapterId = value.chapterId,
+                chapterOrder = value.chapterOrder,
+                synopsis = value.synopsis,
+                reviewReport = value.reviewReport,
+            ),
+        )
+        is ApprovalPayload.SceneText -> PersistedApprovalEnvelope(
+            type = ApprovalPayloadType.SCENE_TEXT,
+            sceneText = PersistedSceneTextPayload(
+                novelId = value.novelId,
+                chapterId = value.chapterId,
+                sceneId = value.sceneId,
+                chapterOrder = value.chapterOrder,
+                sceneOrder = value.sceneOrder,
+                text = value.text,
+                wordCount = value.wordCount,
+                reviewReport = value.reviewReport,
+                proposedBible = value.proposedBible,
+            ),
+        )
+        is ApprovalPayload.BibleUpdate -> PersistedApprovalEnvelope(
+            type = ApprovalPayloadType.BIBLE_UPDATE,
+            bibleUpdate = PersistedBibleUpdatePayload(value.novelId, value.bible),
+        )
+    }
+}
+
+private fun PersistedApprovalEnvelope.toPayload(): ApprovalPayload {
+    return when (type) {
+        ApprovalPayloadType.BACKGROUND -> background?.let { ApprovalPayload.Background(it.userRequest, it.proposal) }
+        ApprovalPayloadType.OUTLINE -> outline?.let { ApprovalPayload.Outline(it.novelId, it.outline) }
+        ApprovalPayloadType.CHAPTER_SYNOPSIS -> chapterSynopsis?.let {
+            ApprovalPayload.ChapterSynopsis(it.novelId, it.chapterId, it.chapterOrder, it.synopsis, it.reviewReport)
+        }
+        ApprovalPayloadType.SCENE_TEXT -> sceneText?.let {
+            ApprovalPayload.SceneText(
+                novelId = it.novelId,
+                chapterId = it.chapterId,
+                sceneId = it.sceneId,
+                chapterOrder = it.chapterOrder,
+                sceneOrder = it.sceneOrder,
+                text = it.text,
+                wordCount = it.wordCount,
+                reviewReport = it.reviewReport,
+                proposedBible = it.proposedBible,
+            )
+        }
+        ApprovalPayloadType.BIBLE_UPDATE -> bibleUpdate?.let { ApprovalPayload.BibleUpdate(it.novelId, it.bible) }
+    } ?: error("Persisted approval payload is missing ${type.name}")
+}
+
+private fun String.summaryForAudit(): String {
+    return trim().replace(Regex("\\s+"), " ").take(240)
+}
+
+@Serializable
+private data class PersistedApprovalEnvelope(
+    val type: ApprovalPayloadType,
+    val background: PersistedBackgroundPayload? = null,
+    val outline: PersistedOutlinePayload? = null,
+    val chapterSynopsis: PersistedChapterSynopsisPayload? = null,
+    val sceneText: PersistedSceneTextPayload? = null,
+    val bibleUpdate: PersistedBibleUpdatePayload? = null,
+)
+
+@Serializable
+private enum class ApprovalPayloadType {
+    BACKGROUND,
+    OUTLINE,
+    CHAPTER_SYNOPSIS,
+    SCENE_TEXT,
+    BIBLE_UPDATE,
+}
+
+@Serializable
+private data class PersistedBackgroundPayload(
+    val userRequest: String,
+    val proposal: NovelBackgroundProposal,
+)
+
+@Serializable
+private data class PersistedOutlinePayload(
+    val novelId: String,
+    val outline: NovelOutline,
+)
+
+@Serializable
+private data class PersistedChapterSynopsisPayload(
+    val novelId: String,
+    val chapterId: String,
+    val chapterOrder: Int,
+    val synopsis: ChapterSynopsis,
+    val reviewReport: ReviewReport?,
+)
+
+@Serializable
+private data class PersistedSceneTextPayload(
+    val novelId: String,
+    val chapterId: String,
+    val sceneId: String,
+    val chapterOrder: Int,
+    val sceneOrder: Int,
+    val text: String,
+    val wordCount: Int,
+    val reviewReport: ReviewReport?,
+    val proposedBible: NovelBible?,
+)
+
+@Serializable
+private data class PersistedBibleUpdatePayload(
+    val novelId: String,
+    val bible: NovelBible,
+)
+
 private data class WorkspaceData(
     val novels: List<Novel> = emptyList(),
     val selectedNovel: Novel? = null,
@@ -2435,6 +2688,7 @@ data class BibleConflictWarning(
 )
 
 data class ConversationState(
+    val sessionId: String = UUID.randomUUID().toString(),
     val messages: List<ConversationMessage> = listOf(
         ConversationMessage(
             role = ConversationRole.ASSISTANT,
@@ -2442,14 +2696,17 @@ data class ConversationState(
         ),
     ),
     val pendingApproval: PendingApproval? = null,
+    val createdAt: kotlinx.datetime.Instant = Clock.System.now(),
 )
 
+@Serializable
 data class ConversationMessage(
     val role: ConversationRole,
     val text: String,
     val createdAt: kotlinx.datetime.Instant = Clock.System.now(),
 )
 
+@Serializable
 enum class ConversationRole {
     USER,
     ASSISTANT,
