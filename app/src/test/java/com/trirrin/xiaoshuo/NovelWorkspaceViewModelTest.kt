@@ -72,6 +72,7 @@ class NovelWorkspaceViewModelTest {
     private lateinit var settings: MutableStateFlow<GenerationSettings>
     private lateinit var conversationSessions: MutableStateFlow<List<ConversationSessionRecord>>
     private lateinit var pendingApprovals: MutableStateFlow<List<PendingApprovalRecord>>
+    private lateinit var toolCallAudits: MutableStateFlow<List<ToolCallAuditRecord>>
     private lateinit var generationCoordinator: GenerationCoordinator
 
     @Before
@@ -87,6 +88,7 @@ class NovelWorkspaceViewModelTest {
         settings = MutableStateFlow(GenerationSettings(apiKey = "test-key"))
         conversationSessions = MutableStateFlow(emptyList())
         pendingApprovals = MutableStateFlow(emptyList())
+        toolCallAudits = MutableStateFlow(emptyList())
         generationCoordinator = GenerationCoordinator(TestScope(dispatcher))
 
         every { novelRepository.observeNovels() } returns novels
@@ -97,6 +99,7 @@ class NovelWorkspaceViewModelTest {
         every { novelRepository.observeTokenUsage(any()) } returns flowOf(emptyList())
         every { novelRepository.observeConversationSessions() } returns conversationSessions
         every { novelRepository.observePendingApprovals() } returns pendingApprovals
+        every { novelRepository.observeToolCallAudits(any()) } returns toolCallAudits
         every { settingsRepository.settings } returns settings
         coEvery { novelRepository.resetInterruptedScenes() } returns 0
         coEvery { novelRepository.getChapters(any()) } returns emptyList()
@@ -114,7 +117,10 @@ class NovelWorkspaceViewModelTest {
             val id = firstArg<String>()
             pendingApprovals.value = pendingApprovals.value.filterNot { it.id == id }
         }
-        coEvery { novelRepository.saveToolCallAudit(any()) } returns Unit
+        coEvery { novelRepository.saveToolCallAudit(any()) } answers {
+            val record = firstArg<ToolCallAuditRecord>()
+            toolCallAudits.value = toolCallAudits.value + record
+        }
     }
 
     @After
@@ -427,7 +433,9 @@ class NovelWorkspaceViewModelTest {
         coEvery { novelRepository.deletePendingApproval(capture(deletedApprovalIds)) } answers {
             pendingApprovals.value = pendingApprovals.value.filterNot { it.id == deletedApprovalIds.last() }
         }
-        coEvery { novelRepository.saveToolCallAudit(capture(savedAudits)) } returns Unit
+        coEvery { novelRepository.saveToolCallAudit(capture(savedAudits)) } answers {
+            toolCallAudits.value = toolCallAudits.value + savedAudits.last()
+        }
         val viewModel = createViewModel()
 
         viewModel.uiState.test {
@@ -447,8 +455,9 @@ class NovelWorkspaceViewModelTest {
             assertTrue(savedNovels.isEmpty())
             assertEquals(ApprovalTargetType.BIBLE_UPDATE, canonPending.conversation.pendingApproval?.targetType)
             assertEquals(ApprovalTargetType.BIBLE_UPDATE.name, savedApprovals.last().targetType)
-            assertTrue(deletedApprovalIds.isNotEmpty())
+            assertTrue(deletedApprovalIds.contains(proposed.conversation.pendingApproval?.id))
             assertTrue(savedAudits.any { it.functionName == "generateSceneTextProposal" && it.resultStatus == "planned" })
+            assertTrue(canonPending.conversation.toolCallAudits.any { it.functionName == "generateSceneTextProposal" && it.resultStatus == "planned" })
 
             viewModel.acceptPendingApproval()
             skipItemsUntil { it.conversation.pendingApproval == null && savedNovels.isNotEmpty() }
@@ -509,15 +518,36 @@ class NovelWorkspaceViewModelTest {
                 id = "session-1",
                 novelId = novel.id,
                 messagesJson = savedMessagesJson(),
+                activeToolCallJson = savedToolCallJson(),
+            ),
+        )
+        toolCallAudits.value = listOf(
+            ToolCallAuditRecord(
+                sessionId = "session-1",
+                novelId = novel.id,
+                functionName = "generateSceneTextProposal",
+                argumentSummary = "{}",
+                resultStatus = "planned",
+                resultMessage = "Conversation tool selected",
             ),
         )
         val restored = createViewModel()
 
         restored.uiState.test {
             advanceUntilIdle()
-            val state = skipItemsUntil { it.conversation.pendingApproval?.id == approval.id }
+            val state = skipItemsUntil {
+                it.conversation.pendingApproval?.id == approval.id &&
+                    it.selectedChapter?.id == chapter.id &&
+                    it.selectedScene?.id == scene.id
+            }
 
+            assertEquals("session-1", state.conversation.sessionId)
+            assertEquals("restore me", state.conversation.messages.single().text)
+            assertEquals("generateSceneTextProposal", state.conversation.activeToolCall?.name)
             assertEquals("restored prose", (state.conversation.pendingApproval?.payload as ApprovalPayload.SceneText).text)
+            assertEquals(chapter.id, state.selectedChapter?.id)
+            assertEquals(scene.id, state.selectedScene?.id)
+            assertTrue(state.conversation.toolCallAudits.any { it.functionName == "generateSceneTextProposal" })
             cancelAndIgnoreRemainingEvents()
         }
     }
@@ -565,6 +595,18 @@ class NovelWorkspaceViewModelTest {
 
     private fun savedMessagesJson(): String {
         return Json.encodeToString(listOf(ConversationMessage(ConversationRole.USER, "restore me")))
+    }
+
+    private fun savedToolCallJson(): String {
+        return Json.encodeToString(
+            JsonObject(
+                mapOf(
+                    "id" to JsonPrimitive("tool-1"),
+                    "name" to JsonPrimitive("generateSceneTextProposal"),
+                    "argumentsJson" to JsonPrimitive("{}"),
+                ),
+            ),
+        )
     }
 
     private fun savedApprovalJson(approval: PendingApproval): String {

@@ -15,21 +15,21 @@ Done:
 - Background, Outline, Chapter Plan, Scene Draft, and Canon Update appear as pending approvals before commit.
 - Accepting a Scene Draft saves scene text first, then creates a separate Canon Update approval before writing Bible canon.
 - Room schema includes persistence tables for conversation sessions, pending approvals, and tool-call audit records.
+- `NovelWorkspaceViewModel` now restores the latest persisted conversation session, pending approval, active tool call, audit history, and chapter/scene selection context after process restart.
+- `NovelWorkspaceViewModel` now persists interaction-tool audit records and exposes audit history through conversation UI state.
 - Repository round-trip tests cover conversation, approval, and audit records.
 - Focused tests and full Gradle build pass.
 
 Partially done:
 
-- Pending approvals are typed in app state and have persistence tables, but full restart recovery of active approvals is not wired end to end.
-- Tool-call audit persistence exists in data/repository, but ViewModel does not yet write every interaction tool call into audit history.
 - Bible update proposals are approval-gated, but conflict-resolution workflow is not fully converted into conversation tools.
 - Legacy direct generation buttons and overwrite dialogs still exist for some non-conversation paths.
+- Restart recovery restores persisted conversation state, but in-progress generation jobs still cannot resume from the middle of a provider call.
 
 Not done:
 
 - Natural-language chapter add/delete/reorder and scene add/delete/reorder functions.
 - High-risk approval flow for structural edits.
-- Full persisted conversation session restore after process death.
 - Recovery/resume of in-progress generation jobs.
 - Complete UI automation for the conversation-first workflow.
 
@@ -43,11 +43,11 @@ Verification completed:
 
 Remaining implementation priority:
 
-1. Wire `ConversationSession`, `PendingApproval`, and `ToolCallAudit` repository APIs into `NovelWorkspaceViewModel` for restart recovery and audit history.
-2. Replace leftover overwrite dialogs with generic pending approvals.
-3. Add structure-edit tools for chapter and scene add/delete/reorder with high-risk approvals.
-4. Add Bible conflict-resolution tools and approval UI.
-5. Add current-UI Compose/instrumentation coverage.
+1. Replace leftover overwrite dialogs with generic pending approvals.
+2. Add structure-edit tools for chapter and scene add/delete/reorder with high-risk approvals.
+3. Add Bible conflict-resolution tools and approval UI.
+4. Add current-UI Compose/instrumentation coverage.
+5. Decide and implement the recovery strategy for interrupted generation jobs, likely explicit restart/retry rather than pretending suspended provider calls can resume in place.
 
 ## Goal
 

@@ -85,6 +85,9 @@ class NovelWorkspaceViewModel(
     private val conversationSessionId = UUID.randomUUID().toString()
     private val conversationCreatedAt = Clock.System.now()
     private val conversation = MutableStateFlow(ConversationState(sessionId = conversationSessionId))
+    private val toolCallAudits = conversation
+        .flatMapLatest { state -> novelRepository.observeToolCallAudits(state.sessionId) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     private val selectedNovelId = MutableStateFlow<String?>(null)
     private val selectedChapterId = MutableStateFlow<String?>(null)
     private val selectedSceneId = MutableStateFlow<String?>(null)
@@ -162,7 +165,7 @@ class NovelWorkspaceViewModel(
             tokenUsage = history.third,
         )
     }
-    val uiState: StateFlow<NovelWorkspaceUiState> = combine(workspaceData, settings, workflow, conversation) { data, settings, workflow, conversation ->
+    val uiState: StateFlow<NovelWorkspaceUiState> = combine(workspaceData, settings, workflow, conversation, toolCallAudits) { data, settings, workflow, conversation, audits ->
         NovelWorkspaceUiState(
             novels = data.novels,
             selectedNovel = data.selectedNovel,
@@ -175,7 +178,7 @@ class NovelWorkspaceViewModel(
             selectedScene = data.selectedScene,
             settings = settings,
             workflow = workflow,
-            conversation = conversation,
+            conversation = conversation.copy(toolCallAudits = audits),
             bibleWarnings = data.selectedNovel?.bible?.warnings().orEmpty(),
         )
     }.stateIn(
@@ -949,11 +952,13 @@ class NovelWorkspaceViewModel(
                 events.forEach { recordPipelineEvent(novel?.id, settings, it) }
                 plannedTool = toolCall ?: error("Conversation agent did not choose a tool")
                 plannedTool?.let { tool ->
+                    setActiveToolCall(tool)
                     auditToolCall(tool.name, tool.argumentsJson.summaryForAudit(), "planned", "Conversation tool selected")
                 }
             } catch (error: CancellationException) {
                 appendEvent("Conversation planning cancelled")
             } catch (error: Exception) {
+                clearActiveToolCall()
                 setError(error.message ?: "Conversation planning failed")
                 appendConversation(ConversationRole.ASSISTANT, "I could not route that request. ${error.message ?: "Try rephrasing it."}")
             } finally {
@@ -984,13 +989,17 @@ class NovelWorkspaceViewModel(
             "revisePendingApproval" -> revisePendingApproval(
                 feedback = args.string("revisionFeedback") ?: originalMessage,
             )
-            "askClarification" -> appendConversation(
-                ConversationRole.ASSISTANT,
-                args.string("message") ?: "Please clarify what you want me to do next.",
-            )
+            "askClarification" -> {
+                appendConversation(
+                    ConversationRole.ASSISTANT,
+                    args.string("message") ?: "Please clarify what you want me to do next.",
+                )
+                clearActiveToolCall()
+            }
             else -> {
                 setError("Unknown tool call: ${toolCall.name}")
                 appendConversation(ConversationRole.ASSISTANT, "I tried to call an unknown internal tool. That is a bug, not your fault.")
+                clearActiveToolCall()
             }
         }
     }
@@ -1002,11 +1011,13 @@ class NovelWorkspaceViewModel(
     ) {
         val settings = uiState.value.settings
         if (settings.apiKey.isBlank()) {
+            clearActiveToolCall()
             setError("API key is required before generation")
             appendConversation(ConversationRole.ASSISTANT, "Add an API key in Settings before I generate a background proposal.")
             return
         }
         if (generationCoordinator.isRunning) {
+            clearActiveToolCall()
             setError("Generation already running")
             return
         }
@@ -1037,8 +1048,10 @@ class NovelWorkspaceViewModel(
             } catch (error: CancellationException) {
                 appendEvent("Generation cancelled")
             } catch (error: Exception) {
+                clearActiveToolCall()
                 setError(error.message ?: "Background generation failed")
             } finally {
+                clearActiveToolCall()
                 workflow.update { it.copy(isBusy = false) }
             }
         }
@@ -1051,11 +1064,13 @@ class NovelWorkspaceViewModel(
     ) {
         val settings = uiState.value.settings
         if (settings.apiKey.isBlank()) {
+            clearActiveToolCall()
             setError("API key is required before generation")
             appendConversation(ConversationRole.ASSISTANT, "Add an API key in Settings before I generate an outline proposal.")
             return
         }
         if (generationCoordinator.isRunning) {
+            clearActiveToolCall()
             setError("Generation already running")
             return
         }
@@ -1086,8 +1101,10 @@ class NovelWorkspaceViewModel(
             } catch (error: CancellationException) {
                 appendEvent("Generation cancelled")
             } catch (error: Exception) {
+                clearActiveToolCall()
                 setError(error.message ?: "Outline generation failed")
             } finally {
+                clearActiveToolCall()
                 workflow.update { it.copy(isBusy = false) }
             }
         }
@@ -1100,11 +1117,13 @@ class NovelWorkspaceViewModel(
     ) {
         val settings = uiState.value.settings
         if (settings.apiKey.isBlank()) {
+            clearActiveToolCall()
             setError("API key is required before generation")
             appendConversation(ConversationRole.ASSISTANT, "Add an API key in Settings before I generate a chapter plan.")
             return
         }
         if (generationCoordinator.isRunning) {
+            clearActiveToolCall()
             setError("Generation already running")
             return
         }
@@ -1146,8 +1165,10 @@ class NovelWorkspaceViewModel(
             } catch (error: CancellationException) {
                 appendEvent("Generation cancelled")
             } catch (error: Exception) {
+                clearActiveToolCall()
                 setError(error.message ?: "Chapter plan generation failed")
             } finally {
+                clearActiveToolCall()
                 workflow.update { it.copy(isBusy = false) }
             }
         }
@@ -1161,11 +1182,13 @@ class NovelWorkspaceViewModel(
     ) {
         val settings = uiState.value.settings
         if (settings.apiKey.isBlank()) {
+            clearActiveToolCall()
             setError("API key is required before generation")
             appendConversation(ConversationRole.ASSISTANT, "Add an API key in Settings before I generate a scene draft.")
             return
         }
         if (generationCoordinator.isRunning) {
+            clearActiveToolCall()
             setError("Generation already running")
             return
         }
@@ -1234,8 +1257,10 @@ class NovelWorkspaceViewModel(
             } catch (error: CancellationException) {
                 appendEvent("Generation cancelled")
             } catch (error: Exception) {
+                clearActiveToolCall()
                 setError(error.message ?: "Scene draft generation failed")
             } finally {
+                clearActiveToolCall()
                 workflow.update { it.copy(isBusy = false) }
             }
         }
@@ -1377,6 +1402,7 @@ class NovelWorkspaceViewModel(
             selectedSceneId.value = payload.sceneId
             val proposedBible = payload.proposedBible
             if (proposedBible != null) {
+                clearCurrentPendingApproval()
                 setPendingApproval(
                     PendingApproval(
                         novelId = payload.novelId,
@@ -1585,21 +1611,39 @@ class NovelWorkspaceViewModel(
 
     private suspend fun restoreConversationState() {
         val session = novelRepository.observeConversationSessions().firstOrNull()?.firstOrNull()
+        val sessionId = session?.id ?: conversationSessionId
         val restoredMessages = session?.messagesJson?.let { messagesJson ->
             runCatching { json.decodeFromString<List<ConversationMessage>>(messagesJson) }.getOrNull()
+        }
+        val activeToolCall = session?.activeToolCallJson?.let { toolCallJson ->
+            runCatching { json.decodeFromString<PersistedWorkflowToolCall>(toolCallJson).toWorkflowToolCall() }.getOrNull()
         }
         val approval = novelRepository.observePendingApprovals().firstOrNull()
             ?.firstOrNull()
             ?.toPendingApproval(json)
-        if (session != null || restoredMessages != null || approval != null) {
+        if (session != null || restoredMessages != null || activeToolCall != null || approval != null) {
             conversation.value = ConversationState(
-                sessionId = session?.id ?: conversationSessionId,
-                messages = restoredMessages?.takeLast(80).orEmpty().ifEmpty { ConversationState(sessionId = session?.id ?: conversationSessionId).messages },
+                sessionId = sessionId,
+                messages = restoredMessages?.takeLast(80).orEmpty().ifEmpty { ConversationState(sessionId = sessionId).messages },
                 pendingApproval = approval,
+                activeToolCall = activeToolCall,
+                toolCallAudits = novelRepository.observeToolCallAudits(sessionId).firstOrNull().orEmpty(),
                 createdAt = session?.createdAt ?: conversationCreatedAt,
             )
             selectedNovelId.value = approval?.novelId ?: session?.novelId
+            restoreSelectionFromApproval(approval)
             appendEvent("Restored conversation session")
+        }
+    }
+
+    private fun restoreSelectionFromApproval(approval: PendingApproval?) {
+        when (val payload = approval?.payload) {
+            is ApprovalPayload.ChapterSynopsis -> selectedChapterId.value = payload.chapterId
+            is ApprovalPayload.SceneText -> {
+                selectedChapterId.value = payload.chapterId
+                selectedSceneId.value = payload.sceneId
+            }
+            else -> Unit
         }
     }
 
@@ -1632,10 +1676,22 @@ class NovelWorkspaceViewModel(
         approval?.let { auditToolCall(it.actionName, "approval=${it.targetType}", "accepted", it.previewTitle) }
     }
 
+    private fun setActiveToolCall(toolCall: WorkflowToolCall) {
+        conversation.update { state -> state.copy(activeToolCall = toolCall) }
+        persistConversationSession()
+    }
+
+    private fun clearActiveToolCall() {
+        val state = conversation.value
+        if (state.activeToolCall == null) return
+        conversation.value = state.copy(activeToolCall = null)
+        persistConversationSession()
+    }
+
     private fun persistConversationSession() {
         val state = conversation.value
         viewModelScope.launch {
-            novelRepository.saveConversationSession(state.toRecord(json))
+            novelRepository.saveConversationSession(state.toRecord(json, selectedNovelId.value))
         }
     }
 
@@ -2456,12 +2512,12 @@ private fun StringBuilder.appendSection(title: String, body: String) {
     appendLine(body)
 }
 
-private fun ConversationState.toRecord(json: Json): ConversationSessionRecord {
+private fun ConversationState.toRecord(json: Json, selectedNovelId: String?): ConversationSessionRecord {
     return ConversationSessionRecord(
         id = sessionId,
-        novelId = pendingApproval?.novelId,
+        novelId = pendingApproval?.novelId ?: selectedNovelId,
         messagesJson = json.encodeToString(messages),
-        activeToolCallJson = pendingApproval?.let { json.encodeToString(it.toEnvelope()) },
+        activeToolCallJson = activeToolCall?.let { json.encodeToString(it.toPersisted()) },
         createdAt = createdAt,
         updatedAt = Clock.System.now(),
     )
@@ -2570,6 +2626,21 @@ private fun PersistedApprovalEnvelope.toPayload(): ApprovalPayload {
 private fun String.summaryForAudit(): String {
     return trim().replace(Regex("\\s+"), " ").take(240)
 }
+
+private fun WorkflowToolCall.toPersisted(): PersistedWorkflowToolCall {
+    return PersistedWorkflowToolCall(id = id, name = name, argumentsJson = argumentsJson)
+}
+
+private fun PersistedWorkflowToolCall.toWorkflowToolCall(): WorkflowToolCall {
+    return WorkflowToolCall(id = id, name = name, argumentsJson = argumentsJson)
+}
+
+@Serializable
+private data class PersistedWorkflowToolCall(
+    val id: String,
+    val name: String,
+    val argumentsJson: String,
+)
 
 @Serializable
 private data class PersistedApprovalEnvelope(
@@ -2696,6 +2767,8 @@ data class ConversationState(
         ),
     ),
     val pendingApproval: PendingApproval? = null,
+    val activeToolCall: WorkflowToolCall? = null,
+    val toolCallAudits: List<ToolCallAuditRecord> = emptyList(),
     val createdAt: kotlinx.datetime.Instant = Clock.System.now(),
 )
 
