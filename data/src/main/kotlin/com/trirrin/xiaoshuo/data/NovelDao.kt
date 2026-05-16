@@ -65,6 +65,36 @@ interface NovelDao {
     @Upsert
     suspend fun upsertTokenUsage(record: TokenUsageRecordEntity)
 
+    @Query("SELECT * FROM conversation_sessions ORDER BY updatedAtEpochMillis DESC")
+    fun observeConversationSessions(): Flow<List<ConversationSessionEntity>>
+
+    @Query("SELECT * FROM conversation_sessions WHERE id = :id")
+    suspend fun getConversationSession(id: String): ConversationSessionEntity?
+
+    @Upsert
+    suspend fun upsertConversationSession(session: ConversationSessionEntity)
+
+    @Query("DELETE FROM conversation_sessions WHERE id = :id")
+    suspend fun deleteConversationSession(id: String)
+
+    @Query("SELECT * FROM pending_approvals ORDER BY createdAtEpochMillis DESC")
+    fun observePendingApprovals(): Flow<List<PendingApprovalEntity>>
+
+    @Query("SELECT * FROM pending_approvals WHERE id = :id")
+    suspend fun getPendingApproval(id: String): PendingApprovalEntity?
+
+    @Upsert
+    suspend fun upsertPendingApproval(approval: PendingApprovalEntity)
+
+    @Query("DELETE FROM pending_approvals WHERE id = :id")
+    suspend fun deletePendingApproval(id: String)
+
+    @Query("SELECT * FROM tool_call_audits WHERE sessionId = :sessionId ORDER BY createdAtEpochMillis DESC")
+    fun observeToolCallAudits(sessionId: String): Flow<List<ToolCallAuditEntity>>
+
+    @Upsert
+    suspend fun upsertToolCallAudit(audit: ToolCallAuditEntity)
+
     @Transaction
     suspend fun upsertNovelGraph(novel: NovelEntity, chapters: List<ChapterEntity>, scenes: List<SceneEntity>) {
         upsertNovel(novel)

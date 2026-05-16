@@ -4,10 +4,12 @@ import com.trirrin.xiaoshuo.llm.LlmClient
 import com.trirrin.xiaoshuo.llm.LlmMessage
 import com.trirrin.xiaoshuo.llm.LlmRequest
 import com.trirrin.xiaoshuo.llm.LlmResponse
+import com.trirrin.xiaoshuo.llm.LlmToolChoice
 import com.trirrin.xiaoshuo.llm.MessageRole
 import com.trirrin.xiaoshuo.model.*
 import com.trirrin.xiaoshuo.prompt.ChapterSynopsisInput
 import com.trirrin.xiaoshuo.prompt.ChapterSynopsisPrompt
+import kotlinx.serialization.json.Json
 
 class ChapterSynopsisAgent(
     internal val llmClient: LlmClient,
@@ -19,6 +21,7 @@ class ChapterSynopsisAgent(
     override val description = "Generates chapter synopsis with scene breakdowns"
 
     private val prompt = ChapterSynopsisPrompt()
+    private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun generate(
         novel: Novel,
@@ -57,6 +60,8 @@ class ChapterSynopsisAgent(
             maxTokens = 4096,
             temperature = 0.7,
             cacheableSystemPrompt = true,
+            tools = listOf(chapterSynopsisProposalTool),
+            toolChoice = LlmToolChoice.Named(SUBMIT_CHAPTER_SYNOPSIS_PROPOSAL),
         )
 
         val response: LlmResponse = try {
@@ -66,19 +71,18 @@ class ChapterSynopsisAgent(
         }
 
         val baseUsage = response.toAgentUsage(name, model)
-        return parseOrRepairJsonOutput(
-            rawContent = response.content,
-            llmClient = llmClient,
-            model = model,
-            agentName = name,
-            parse = prompt::parseOutput,
-        ).fold(
-            onSuccess = { (synopsis, repairUsage) ->
-                AgentResult.SynopsisResult(synopsis, baseUsage.plusRepair(repairUsage))
+        return response.requireSingleToolCallArguments(SUBMIT_CHAPTER_SYNOPSIS_PROPOSAL, name).fold(
+            onSuccess = { argumentsJson ->
+                try {
+                    AgentResult.SynopsisResult(
+                        synopsis = json.decodeFromString(ChapterSynopsis.serializer(), argumentsJson),
+                        usage = baseUsage,
+                    )
+                } catch (error: Exception) {
+                    AgentResult.Error("Failed to decode chapter synopsis proposal arguments: ${error.message}", error)
+                }
             },
-            onFailure = {
-                AgentResult.Error("Failed to parse synopsis: ${it.message}", it)
-            },
+            onFailure = { AgentResult.Error(it.message ?: "Invalid chapter synopsis proposal tool call", it) },
         )
     }
 }

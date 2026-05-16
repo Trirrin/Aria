@@ -1,5 +1,54 @@
 # Function-Call Conversational Workflow Plan
 
+## Implementation Status
+
+Last updated: 2026-05-16.
+
+Core judgment: the first usable conversation-first loop is implemented, but the entire plan is not fully complete.
+
+Done:
+
+- App opens into `Conversation` plus `Settings`; the old tab-first workflow is no longer the primary entry point.
+- Interaction routing uses provider-native tool calls for background, outline, chapter plan, scene draft, accept, reject, revise, and clarification.
+- Structured artifact emission uses provider-native tool calls for background, outline, chapter synopsis, scene review, and Bible update proposals.
+- Scene prose remains raw text, not JSON-wrapped.
+- Background, Outline, Chapter Plan, Scene Draft, and Canon Update appear as pending approvals before commit.
+- Accepting a Scene Draft saves scene text first, then creates a separate Canon Update approval before writing Bible canon.
+- Room schema includes persistence tables for conversation sessions, pending approvals, and tool-call audit records.
+- Repository round-trip tests cover conversation, approval, and audit records.
+- Focused tests and full Gradle build pass.
+
+Partially done:
+
+- Pending approvals are typed in app state and have persistence tables, but full restart recovery of active approvals is not wired end to end.
+- Tool-call audit persistence exists in data/repository, but ViewModel does not yet write every interaction tool call into audit history.
+- Bible update proposals are approval-gated, but conflict-resolution workflow is not fully converted into conversation tools.
+- Legacy direct generation buttons and overwrite dialogs still exist for some non-conversation paths.
+
+Not done:
+
+- Natural-language chapter add/delete/reorder and scene add/delete/reorder functions.
+- High-risk approval flow for structural edits.
+- Full persisted conversation session restore after process death.
+- Recovery/resume of in-progress generation jobs.
+- Complete UI automation for the conversation-first workflow.
+
+Verification completed:
+
+```bash
+./gradlew :core:llm:test :core:agent:test :core:prompt:test :app:testDebugUnitTest :data:testDebugUnitTest
+./gradlew :app:assembleDebug
+./gradlew build
+```
+
+Remaining implementation priority:
+
+1. Wire `ConversationSession`, `PendingApproval`, and `ToolCallAudit` repository APIs into `NovelWorkspaceViewModel` for restart recovery and audit history.
+2. Replace leftover overwrite dialogs with generic pending approvals.
+3. Add structure-edit tools for chapter and scene add/delete/reorder with high-risk approvals.
+4. Add Bible conflict-resolution tools and approval UI.
+5. Add current-UI Compose/instrumentation coverage.
+
 ## Goal
 
 Replace the tab-first authoring flow with a single conversation-first interaction agent while keeping the structured writing pipeline underneath it.

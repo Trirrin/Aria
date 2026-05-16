@@ -110,6 +110,46 @@ class NovelRepository(
     suspend fun saveTokenUsage(record: TokenUsageRecord) {
         dao.upsertTokenUsage(record.toEntity())
     }
+
+    fun observeConversationSessions(): Flow<List<ConversationSessionRecord>> {
+        return dao.observeConversationSessions().map { sessions -> sessions.map { it.toModel() } }
+    }
+
+    suspend fun getConversationSession(id: String): ConversationSessionRecord? {
+        return dao.getConversationSession(id)?.toModel()
+    }
+
+    suspend fun saveConversationSession(session: ConversationSessionRecord) {
+        dao.upsertConversationSession(session.toEntity())
+    }
+
+    suspend fun deleteConversationSession(id: String) {
+        dao.deleteConversationSession(id)
+    }
+
+    fun observePendingApprovals(): Flow<List<PendingApprovalRecord>> {
+        return dao.observePendingApprovals().map { approvals -> approvals.map { it.toModel() } }
+    }
+
+    suspend fun getPendingApproval(id: String): PendingApprovalRecord? {
+        return dao.getPendingApproval(id)?.toModel()
+    }
+
+    suspend fun savePendingApproval(approval: PendingApprovalRecord) {
+        dao.upsertPendingApproval(approval.toEntity())
+    }
+
+    suspend fun deletePendingApproval(id: String) {
+        dao.deletePendingApproval(id)
+    }
+
+    fun observeToolCallAudits(sessionId: String): Flow<List<ToolCallAuditRecord>> {
+        return dao.observeToolCallAudits(sessionId).map { audits -> audits.map { it.toModel() } }
+    }
+
+    suspend fun saveToolCallAudit(audit: ToolCallAuditRecord) {
+        dao.upsertToolCallAudit(audit.toEntity())
+    }
 }
 
 private fun Novel.toEntity(json: Json): NovelEntity {
@@ -224,6 +264,40 @@ data class TokenUsageRecord(
     val createdAt: Instant = Clock.System.now(),
 )
 
+data class ConversationSessionRecord(
+    val id: String = UUID.randomUUID().toString(),
+    val novelId: String? = null,
+    val messagesJson: String,
+    val activeToolCallJson: String? = null,
+    val createdAt: Instant = Clock.System.now(),
+    val updatedAt: Instant = createdAt,
+)
+
+data class PendingApprovalRecord(
+    val id: String = UUID.randomUUID().toString(),
+    val novelId: String? = null,
+    val targetType: String,
+    val targetId: String? = null,
+    val actionName: String,
+    val previewTitle: String,
+    val previewText: String,
+    val proposedPayloadJson: String,
+    val riskLevel: String,
+    val requiredBeforeCommit: Boolean,
+    val createdAt: Instant = Clock.System.now(),
+)
+
+data class ToolCallAuditRecord(
+    val id: String = UUID.randomUUID().toString(),
+    val sessionId: String,
+    val novelId: String? = null,
+    val functionName: String,
+    val argumentSummary: String,
+    val resultStatus: String,
+    val resultMessage: String,
+    val createdAt: Instant = Clock.System.now(),
+)
+
 private fun RevisionSnapshotEntity.toModel(): RevisionSnapshot {
     return RevisionSnapshot(
         id = id,
@@ -260,6 +334,86 @@ private fun TokenUsageRecord.toEntity(): TokenUsageRecordEntity {
         inputTokens = inputTokens,
         outputTokens = outputTokens,
         estimatedCostUsd = estimatedCostUsd,
+        createdAtEpochMillis = createdAt.toEpochMilliseconds(),
+    )
+}
+
+private fun ConversationSessionEntity.toModel(): ConversationSessionRecord {
+    return ConversationSessionRecord(
+        id = id,
+        novelId = novelId,
+        messagesJson = messagesJson,
+        activeToolCallJson = activeToolCallJson,
+        createdAt = Instant.fromEpochMilliseconds(createdAtEpochMillis),
+        updatedAt = Instant.fromEpochMilliseconds(updatedAtEpochMillis),
+    )
+}
+
+private fun ConversationSessionRecord.toEntity(): ConversationSessionEntity {
+    return ConversationSessionEntity(
+        id = id,
+        novelId = novelId,
+        messagesJson = messagesJson,
+        activeToolCallJson = activeToolCallJson,
+        createdAtEpochMillis = createdAt.toEpochMilliseconds(),
+        updatedAtEpochMillis = updatedAt.toEpochMilliseconds(),
+    )
+}
+
+private fun PendingApprovalEntity.toModel(): PendingApprovalRecord {
+    return PendingApprovalRecord(
+        id = id,
+        novelId = novelId,
+        targetType = targetType,
+        targetId = targetId,
+        actionName = actionName,
+        previewTitle = previewTitle,
+        previewText = previewText,
+        proposedPayloadJson = proposedPayloadJson,
+        riskLevel = riskLevel,
+        requiredBeforeCommit = requiredBeforeCommit,
+        createdAt = Instant.fromEpochMilliseconds(createdAtEpochMillis),
+    )
+}
+
+private fun PendingApprovalRecord.toEntity(): PendingApprovalEntity {
+    return PendingApprovalEntity(
+        id = id,
+        novelId = novelId,
+        targetType = targetType,
+        targetId = targetId,
+        actionName = actionName,
+        previewTitle = previewTitle,
+        previewText = previewText,
+        proposedPayloadJson = proposedPayloadJson,
+        riskLevel = riskLevel,
+        requiredBeforeCommit = requiredBeforeCommit,
+        createdAtEpochMillis = createdAt.toEpochMilliseconds(),
+    )
+}
+
+private fun ToolCallAuditEntity.toModel(): ToolCallAuditRecord {
+    return ToolCallAuditRecord(
+        id = id,
+        sessionId = sessionId,
+        novelId = novelId,
+        functionName = functionName,
+        argumentSummary = argumentSummary,
+        resultStatus = resultStatus,
+        resultMessage = resultMessage,
+        createdAt = Instant.fromEpochMilliseconds(createdAtEpochMillis),
+    )
+}
+
+private fun ToolCallAuditRecord.toEntity(): ToolCallAuditEntity {
+    return ToolCallAuditEntity(
+        id = id,
+        sessionId = sessionId,
+        novelId = novelId,
+        functionName = functionName,
+        argumentSummary = argumentSummary,
+        resultStatus = resultStatus,
+        resultMessage = resultMessage,
         createdAtEpochMillis = createdAt.toEpochMilliseconds(),
     )
 }

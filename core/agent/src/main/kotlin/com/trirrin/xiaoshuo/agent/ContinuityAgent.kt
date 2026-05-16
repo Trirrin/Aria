@@ -2,8 +2,10 @@ package com.trirrin.xiaoshuo.agent
 
 import com.trirrin.xiaoshuo.llm.*
 import com.trirrin.xiaoshuo.model.NovelBible
+import com.trirrin.xiaoshuo.prompt.BibleDiff
 import com.trirrin.xiaoshuo.prompt.ContinuityInput
 import com.trirrin.xiaoshuo.prompt.ContinuityPrompt
+import kotlinx.serialization.json.Json
 
 class ContinuityAgent(
     private val llmClient: LlmClient,
@@ -14,6 +16,7 @@ class ContinuityAgent(
     override val description = "Extracts facts from scene text to update the Novel Bible"
 
     private val prompt = ContinuityPrompt()
+    private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun extract(
         sceneText: String,
@@ -35,6 +38,8 @@ class ContinuityAgent(
             maxTokens = 4096,
             temperature = 0.2,
             cacheableSystemPrompt = true,
+            tools = listOf(bibleUpdateProposalTool),
+            toolChoice = LlmToolChoice.Named(SUBMIT_BIBLE_UPDATE_PROPOSAL),
         )
 
         val response: LlmResponse = try {
@@ -44,19 +49,18 @@ class ContinuityAgent(
         }
 
         val baseUsage = response.toAgentUsage(name, model)
-        return parseOrRepairJsonOutput(
-            rawContent = response.content,
-            llmClient = llmClient,
-            model = model,
-            agentName = name,
-            parse = prompt::parseOutput,
-        ).fold(
-            onSuccess = { (diff, repairUsage) ->
-                AgentResult.ContinuityResult(diff, baseUsage.plusRepair(repairUsage))
+        return response.requireSingleToolCallArguments(SUBMIT_BIBLE_UPDATE_PROPOSAL, name).fold(
+            onSuccess = { argumentsJson ->
+                try {
+                    AgentResult.ContinuityResult(
+                        bibleDiff = json.decodeFromString(BibleDiff.serializer(), argumentsJson),
+                        usage = baseUsage,
+                    )
+                } catch (error: Exception) {
+                    AgentResult.Error("Failed to decode Bible update proposal arguments: ${error.message}", error)
+                }
             },
-            onFailure = {
-                AgentResult.Error("Failed to parse continuity output: ${it.message}", it)
-            },
+            onFailure = { AgentResult.Error(it.message ?: "Invalid Bible update proposal tool call", it) },
         )
     }
 }

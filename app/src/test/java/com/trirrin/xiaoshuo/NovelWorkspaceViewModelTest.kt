@@ -5,6 +5,7 @@ import com.trirrin.xiaoshuo.agent.AgentPipeline
 import com.trirrin.xiaoshuo.agent.AgentResult
 import com.trirrin.xiaoshuo.agent.ChapterSynopsisPipelineResult
 import com.trirrin.xiaoshuo.agent.PipelineEvent
+import com.trirrin.xiaoshuo.agent.WorkflowToolCall
 import com.trirrin.xiaoshuo.data.GenerationSettings
 import com.trirrin.xiaoshuo.data.GenerationSettingsRepository
 import com.trirrin.xiaoshuo.data.NovelRepository
@@ -12,8 +13,10 @@ import com.trirrin.xiaoshuo.model.Chapter
 import com.trirrin.xiaoshuo.model.ChapterBrief
 import com.trirrin.xiaoshuo.model.ChapterStatus
 import com.trirrin.xiaoshuo.model.ChapterSynopsis
+import com.trirrin.xiaoshuo.model.CharacterEntry
 import com.trirrin.xiaoshuo.model.Genre
 import com.trirrin.xiaoshuo.model.Novel
+import com.trirrin.xiaoshuo.model.NovelBible
 import com.trirrin.xiaoshuo.model.NovelOutline
 import com.trirrin.xiaoshuo.model.PlotPoint
 import com.trirrin.xiaoshuo.model.ReviewStatus
@@ -340,6 +343,77 @@ class NovelWorkspaceViewModelTest {
             assertEquals("The ledger breathed ash.", imported.scenes.single().text)
             assertEquals(SceneTextSource.EDITED, imported.scenes.single().textSource)
             assertEquals(SceneStatus.GENERATED, imported.scenes.single().status)
+            cancelAndIgnoreRemainingEvents()
+        }
+    }
+
+    @Test
+    fun `conversation scene proposal waits for approval before saving scene and bible`() = runTestWithMain {
+        val novel = sampleNovel(outline = sampleOutline())
+        val chapter = sampleChapter(novel.id, synopsis = sampleSynopsis())
+        val scene = sampleScene(novel.id, chapter.id)
+        val proposedBible = NovelBible(characters = listOf(CharacterEntry(name = "Mira", currentState = "awake")))
+        novels.value = listOf(novel)
+        chapters.value = listOf(chapter)
+        scenes.value = listOf(scene)
+        allScenes.value = listOf(scene)
+        coEvery { novelRepository.getChapters(novel.id) } returns listOf(chapter)
+        coEvery { novelRepository.getScenes(chapter.id) } returns listOf(scene)
+        coEvery { pipeline.planConversationTool(any()) } returns (
+            WorkflowToolCall("tool-1", "generateSceneTextProposal", "{}") to emptyList()
+        )
+        coEvery {
+            pipeline.generateScene(
+                novel = novel,
+                chapter = chapter,
+                scene = scene,
+                previousSceneEnding = null,
+                reviewFeedback = null,
+                referenceProseStyle = null,
+            )
+        } returns flowOf(
+            PipelineEvent.SceneTextComplete("new prose", 2),
+            PipelineEvent.ReviewComplete(
+                AgentResult.ReviewResult(
+                    score = 8,
+                    issues = emptyList(),
+                    suggestedFixes = emptyList(),
+                    passed = true,
+                ),
+            ),
+            PipelineEvent.BibleUpdated(proposedBible),
+        )
+        val savedScenes = mutableListOf<Scene>()
+        val savedNovels = mutableListOf<Novel>()
+        coEvery { novelRepository.upsertScene(capture(savedScenes)) } answers {
+            scenes.value = listOf(savedScenes.last())
+        }
+        coEvery { novelRepository.upsertNovel(capture(savedNovels)) } answers {
+            novels.value = listOf(savedNovels.last())
+        }
+        val viewModel = createViewModel()
+
+        viewModel.uiState.test {
+            skipItemsUntil { it.selectedScene?.id == scene.id }
+            viewModel.submitConversationMessage("draft scene one")
+            val proposed = skipItemsUntil { it.conversation.pendingApproval?.targetType == ApprovalTargetType.SCENE_TEXT && !it.workflow.isBusy }
+
+            assertEquals("new prose", proposed.conversation.pendingApproval?.previewText?.substringAfter("Scene Draft\n")?.substringBefore("\n\nReview"))
+            assertTrue(savedScenes.isEmpty())
+            assertTrue(savedNovels.isEmpty())
+
+            viewModel.acceptPendingApproval()
+            val canonPending = skipItemsUntil { it.conversation.pendingApproval?.targetType == ApprovalTargetType.BIBLE_UPDATE }
+
+            assertEquals("new prose", savedScenes.single().text)
+            assertEquals(SceneStatus.REVIEWED, savedScenes.single().status)
+            assertTrue(savedNovels.isEmpty())
+            assertEquals(ApprovalTargetType.BIBLE_UPDATE, canonPending.conversation.pendingApproval?.targetType)
+
+            viewModel.acceptPendingApproval()
+            skipItemsUntil { it.conversation.pendingApproval == null && savedNovels.isNotEmpty() }
+
+            assertEquals("Mira", savedNovels.single().bible.characters.single().name)
             cancelAndIgnoreRemainingEvents()
         }
     }

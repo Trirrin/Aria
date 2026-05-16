@@ -958,6 +958,15 @@ class NovelWorkspaceViewModel(
                 userRequest = args.string("userRequest") ?: originalMessage,
             )
             "generateOutlineProposal" -> generateOutline()
+            "generateChapterSynopsisProposal" -> generateChapterSynopsisProposal(
+                novelId = args.string("novelId"),
+                chapterIndex = args.int("chapterIndex"),
+            )
+            "generateSceneTextProposal" -> generateSceneTextProposal(
+                novelId = args.string("novelId"),
+                chapterIndex = args.int("chapterIndex"),
+                sceneIndex = args.int("sceneIndex"),
+            )
             "acceptPendingApproval" -> acceptPendingApproval()
             "rejectPendingApproval" -> rejectPendingApproval()
             "revisePendingApproval" -> revisePendingApproval(
@@ -1072,10 +1081,165 @@ class NovelWorkspaceViewModel(
         }
     }
 
+    private fun generateChapterSynopsisProposal(
+        novelId: String? = null,
+        chapterIndex: Int? = null,
+        revisionFeedback: String? = null,
+    ) {
+        val settings = uiState.value.settings
+        if (settings.apiKey.isBlank()) {
+            setError("API key is required before generation")
+            appendConversation(ConversationRole.ASSISTANT, "Add an API key in Settings before I generate a chapter plan.")
+            return
+        }
+        if (generationCoordinator.isRunning) {
+            setError("Generation already running")
+            return
+        }
+
+        generationCoordinator.launch {
+            workflow.update { it.copy(isBusy = true, error = null, events = (it.events + timestamped("Generating chapter plan proposal")).takeLast(12)) }
+            try {
+                val novel = resolveNovel(novelId)
+                require(novel.outline != null) { "Generate an outline first" }
+                val chapters = novelRepository.getChapters(novel.id)
+                val chapter = resolveChapter(chapters, chapterIndex)
+                val pipeline = pipelineFactory(settings)
+                val result = pipeline.generateChapterSynopsis(novel, chapter, chapters, reviewFeedback = revisionFeedback)
+                result.events.forEach { recordPipelineEvent(novel.id, settings, it) }
+                val generated = result.synopsis ?: error("Chapter plan generation failed")
+                val reviewReport = result.review?.toReport(0)
+                val risk = if (chapter.synopsis == null) ApprovalRiskLevel.MEDIUM else ApprovalRiskLevel.HIGH
+                conversation.update {
+                    it.copy(
+                        pendingApproval = PendingApproval(
+                            novelId = novel.id,
+                            targetType = ApprovalTargetType.CHAPTER_SYNOPSIS,
+                            targetId = chapter.id,
+                            actionName = "acceptChapterSynopsisProposal",
+                            previewTitle = "Chapter ${chapter.order}: ${chapter.title.ifBlank { "Chapter Plan" }}",
+                            previewText = generated.toPreviewText(reviewReport),
+                            riskLevel = risk,
+                            requiredBeforeCommit = true,
+                            payload = ApprovalPayload.ChapterSynopsis(
+                                novelId = novel.id,
+                                chapterId = chapter.id,
+                                chapterOrder = chapter.order,
+                                synopsis = generated,
+                                reviewReport = reviewReport,
+                            ),
+                        ),
+                    )
+                }
+                appendConversation(ConversationRole.ASSISTANT, "I drafted a chapter plan proposal. Nothing is saved until you accept it.")
+                appendEvent("Chapter plan proposal ready")
+            } catch (error: CancellationException) {
+                appendEvent("Generation cancelled")
+            } catch (error: Exception) {
+                setError(error.message ?: "Chapter plan generation failed")
+            } finally {
+                workflow.update { it.copy(isBusy = false) }
+            }
+        }
+    }
+
+    private fun generateSceneTextProposal(
+        novelId: String? = null,
+        chapterIndex: Int? = null,
+        sceneIndex: Int? = null,
+        revisionFeedback: String? = null,
+    ) {
+        val settings = uiState.value.settings
+        if (settings.apiKey.isBlank()) {
+            setError("API key is required before generation")
+            appendConversation(ConversationRole.ASSISTANT, "Add an API key in Settings before I generate a scene draft.")
+            return
+        }
+        if (generationCoordinator.isRunning) {
+            setError("Generation already running")
+            return
+        }
+
+        generationCoordinator.launch {
+            workflow.update { it.copy(isBusy = true, error = null, events = (it.events + timestamped("Generating scene draft proposal")).takeLast(12)) }
+            try {
+                val novel = resolveNovel(novelId)
+                val chapter = resolveChapter(novelRepository.getChapters(novel.id), chapterIndex)
+                require(chapter.synopsis != null) { "Generate a chapter plan first" }
+                val scene = resolveScene(novelRepository.getScenes(chapter.id), sceneIndex)
+                val scenes = novelRepository.getScenes(chapter.id)
+                val previousSceneEnding = previousSceneEnding(scenes, scene)
+                val referenceProseStyle = latestApprovedStyleSample(scenes, scene)
+                val pipeline = pipelineFactory(settings)
+                var generatedText = ""
+                var generatedWordCount = 0
+                var reviewReport: ReviewReport? = null
+                var proposedBible: NovelBible? = null
+                pipeline.generateScene(
+                    novel = novel,
+                    chapter = chapter,
+                    scene = scene,
+                    previousSceneEnding = previousSceneEnding,
+                    reviewFeedback = revisionFeedback,
+                    referenceProseStyle = referenceProseStyle,
+                ).collect { event ->
+                    recordPipelineEvent(novel.id, settings, event)
+                    when (event) {
+                        is PipelineEvent.SceneTextComplete -> {
+                            generatedText = event.text
+                            generatedWordCount = event.wordCount
+                        }
+                        is PipelineEvent.ReviewComplete -> reviewReport = event.result.toReport(0)
+                        is PipelineEvent.BibleUpdated -> proposedBible = event.bible
+                        else -> Unit
+                    }
+                }
+                require(generatedText.isNotBlank()) { "Scene generation returned no text" }
+                val risk = if (scene.text.isBlank()) ApprovalRiskLevel.MEDIUM else ApprovalRiskLevel.HIGH
+                conversation.update {
+                    it.copy(
+                        pendingApproval = PendingApproval(
+                            novelId = novel.id,
+                            targetType = ApprovalTargetType.SCENE_TEXT,
+                            targetId = scene.id,
+                            actionName = "acceptSceneTextProposal",
+                            previewTitle = "Scene ${scene.order}: Chapter ${chapter.order}",
+                            previewText = generatedText.toScenePreviewText(reviewReport),
+                            riskLevel = risk,
+                            requiredBeforeCommit = true,
+                            payload = ApprovalPayload.SceneText(
+                                novelId = novel.id,
+                                chapterId = chapter.id,
+                                sceneId = scene.id,
+                                chapterOrder = chapter.order,
+                                sceneOrder = scene.order,
+                                text = generatedText,
+                                wordCount = generatedWordCount,
+                                reviewReport = reviewReport,
+                                proposedBible = proposedBible,
+                            ),
+                        ),
+                    )
+                }
+                appendConversation(ConversationRole.ASSISTANT, "I drafted a scene proposal. Review it before saving it as scene text.")
+                appendEvent("Scene draft proposal ready")
+            } catch (error: CancellationException) {
+                appendEvent("Generation cancelled")
+            } catch (error: Exception) {
+                setError(error.message ?: "Scene draft generation failed")
+            } finally {
+                workflow.update { it.copy(isBusy = false) }
+            }
+        }
+    }
+
     private fun acceptApproval(approval: PendingApproval) {
         when (val payload = approval.payload) {
             is ApprovalPayload.Background -> acceptBackgroundProposal(payload.proposal)
             is ApprovalPayload.Outline -> acceptOutlineProposal(payload.novelId, payload.outline)
+            is ApprovalPayload.ChapterSynopsis -> acceptChapterSynopsisProposal(payload)
+            is ApprovalPayload.SceneText -> acceptSceneTextProposal(payload)
+            is ApprovalPayload.BibleUpdate -> acceptBibleUpdateProposal(payload)
         }
     }
 
@@ -1093,6 +1257,21 @@ class NovelWorkspaceViewModel(
                 revisionFeedback = feedback,
                 previousProposal = payload.outline,
             )
+            is ApprovalPayload.ChapterSynopsis -> generateChapterSynopsisProposal(
+                novelId = payload.novelId,
+                chapterIndex = payload.chapterOrder,
+                revisionFeedback = feedback,
+            )
+            is ApprovalPayload.SceneText -> generateSceneTextProposal(
+                novelId = payload.novelId,
+                chapterIndex = payload.chapterOrder,
+                sceneIndex = payload.sceneOrder,
+                revisionFeedback = feedback,
+            )
+            is ApprovalPayload.BibleUpdate -> {
+                conversation.update { it.copy(pendingApproval = null) }
+                appendConversation(ConversationRole.ASSISTANT, "Bible update revisions are not generated directly. Revise the accepted scene text, then request a new canon update.")
+            }
         }
     }
 
@@ -1136,6 +1315,95 @@ class NovelWorkspaceViewModel(
             conversation.update { it.copy(pendingApproval = null) }
             appendConversation(ConversationRole.ASSISTANT, "Accepted outline and created ${chapters.size} chapter shell(s).")
             appendEvent("Accepted outline proposal")
+        }
+    }
+
+    private fun acceptChapterSynopsisProposal(payload: ApprovalPayload.ChapterSynopsis) {
+        viewModelScope.launch {
+            val chapter = novelRepository.getChapters(payload.novelId).firstOrNull { it.id == payload.chapterId } ?: run {
+                setError("Chapter not found")
+                return@launch
+            }
+            chapter.synopsis?.let {
+                saveSnapshot(payload.novelId, SNAPSHOT_CHAPTER_SYNOPSIS, chapter.id, "Synopsis before proposal acceptance", it)
+            }
+            novelRepository.upsertChapter(
+                chapter.copy(
+                    synopsis = payload.synopsis,
+                    reviewNotes = payload.reviewReport?.toNotes(),
+                    reviewReport = payload.reviewReport,
+                    status = ChapterStatus.SYNOPSIS_GENERATED,
+                ),
+            )
+            saveSceneShells(payload.novelId, chapter.id, payload.synopsis.sceneBreakdowns)
+            selectedNovelId.value = payload.novelId
+            selectedChapterId.value = chapter.id
+            selectedSceneId.value = novelRepository.getScenes(chapter.id).firstOrNull()?.id
+            conversation.update { it.copy(pendingApproval = null) }
+            appendConversation(ConversationRole.ASSISTANT, "Accepted chapter plan and created ${payload.synopsis.sceneBreakdowns.size} scene shell(s).")
+            appendEvent("Accepted chapter plan proposal")
+        }
+    }
+
+    private fun acceptSceneTextProposal(payload: ApprovalPayload.SceneText) {
+        viewModelScope.launch {
+            val scene = novelRepository.getScenes(payload.chapterId).firstOrNull { it.id == payload.sceneId } ?: run {
+                setError("Scene not found")
+                return@launch
+            }
+            if (scene.text.isNotBlank()) {
+                saveSnapshot(payload.novelId, SNAPSHOT_SCENE, scene.id, "Scene before proposal acceptance", scene)
+            }
+            novelRepository.upsertScene(
+                scene.copy(
+                    text = payload.text,
+                    wordCount = payload.wordCount,
+                    reviewNotes = payload.reviewReport?.toNotes(),
+                    reviewReport = payload.reviewReport,
+                    status = if (payload.reviewReport?.passed == true) SceneStatus.REVIEWED else SceneStatus.GENERATED,
+                    textSource = SceneTextSource.GENERATED,
+                ),
+            )
+            selectedNovelId.value = payload.novelId
+            selectedChapterId.value = payload.chapterId
+            selectedSceneId.value = payload.sceneId
+            val proposedBible = payload.proposedBible
+            if (proposedBible != null) {
+                conversation.update {
+                    it.copy(
+                        pendingApproval = PendingApproval(
+                            novelId = payload.novelId,
+                            targetType = ApprovalTargetType.BIBLE_UPDATE,
+                            targetId = payload.sceneId,
+                            actionName = "acceptBibleUpdate",
+                            previewTitle = "Canon Update From Scene ${payload.sceneOrder}",
+                            previewText = proposedBible.toPreviewText(),
+                            riskLevel = ApprovalRiskLevel.HIGH,
+                            requiredBeforeCommit = true,
+                            payload = ApprovalPayload.BibleUpdate(payload.novelId, proposedBible),
+                        ),
+                    )
+                }
+                appendConversation(ConversationRole.ASSISTANT, "Accepted scene text. I prepared a separate canon update proposal for review.")
+            } else {
+                conversation.update { it.copy(pendingApproval = null) }
+                appendConversation(ConversationRole.ASSISTANT, "Accepted scene text. No canon update was proposed.")
+            }
+            appendEvent("Accepted scene text proposal")
+        }
+    }
+
+    private fun acceptBibleUpdateProposal(payload: ApprovalPayload.BibleUpdate) {
+        viewModelScope.launch {
+            val novel = novelRepository.getNovel(payload.novelId) ?: run {
+                setError("Novel not found")
+                return@launch
+            }
+            saveSnapshot(novel.id, SNAPSHOT_BIBLE, novel.id, "Bible before proposal acceptance", novel.bible)
+            novelRepository.upsertNovel(novel.copy(bible = payload.bible, updatedAt = Clock.System.now()))
+            conversation.update { it.copy(pendingApproval = null) }
+            appendConversation(ConversationRole.ASSISTANT, "Accepted canon update and saved it to the Novel Bible.")
+            appendEvent("Accepted Bible update proposal")
         }
     }
 
@@ -1231,6 +1499,29 @@ class NovelWorkspaceViewModel(
                     ),
             )
         }
+    }
+
+    private suspend fun resolveNovel(novelId: String?): Novel {
+        novelId?.let { return novelRepository.getNovel(it) ?: error("Novel not found") }
+        return uiState.value.selectedNovel ?: error("Create or select a novel first")
+    }
+
+    private fun resolveChapter(chapters: List<Chapter>, chapterIndex: Int?): Chapter {
+        if (chapters.isEmpty()) error("No chapter shell exists")
+        chapterIndex?.let { index ->
+            return chapters.firstOrNull { it.order == index } ?: error("Chapter $index does not exist")
+        }
+        val selectedId = uiState.value.selectedChapter?.id
+        return chapters.firstOrNull { it.id == selectedId } ?: chapters.first()
+    }
+
+    private fun resolveScene(scenes: List<Scene>, sceneIndex: Int?): Scene {
+        if (scenes.isEmpty()) error("No scene shell exists")
+        sceneIndex?.let { index ->
+            return scenes.firstOrNull { it.order == index } ?: error("Scene $index does not exist")
+        }
+        val selectedId = uiState.value.selectedScene?.id
+        return scenes.firstOrNull { it.id == selectedId } ?: scenes.first()
     }
 
     private fun runPipelineStep(
@@ -1984,6 +2275,10 @@ private fun JsonObject.string(name: String): String? {
     return this[name]?.jsonPrimitive?.content?.trim()?.takeIf { it.isNotBlank() }
 }
 
+private fun JsonObject.int(name: String): Int? {
+    return this[name]?.jsonPrimitive?.content?.trim()?.toIntOrNull()
+}
+
 private fun NovelBackgroundProposal.toNovel(now: kotlinx.datetime.Instant): Novel {
     val title = titleOptions.firstOrNull { it.isNotBlank() }?.trim() ?: "Untitled Novel"
     return Novel(
@@ -2034,6 +2329,25 @@ private fun NovelOutline.toPreviewText(): String {
         appendSection("Chapters", chapterBriefs.joinToString("\n") { brief ->
             "${brief.chapterIndex}. ${brief.title}\n   ${brief.plotBeats}\n   ${brief.purposeInStory}"
         })
+    }.trim()
+}
+
+private fun ChapterSynopsis.toPreviewText(reviewReport: ReviewReport?): String {
+    return buildString {
+        appendSection("Chapter Goal", chapterGoal)
+        appendSection("Scenes", sceneBreakdowns.joinToString("\n") { scene ->
+            "${scene.sceneIndex}. ${scene.synopsis}\n   Target: ${scene.targetWordCount} words"
+        })
+        appendSection("Chapter Ending", chapterEnding)
+        appendSection("Transition Notes", transitionNotes)
+        reviewReport?.let { appendSection("Review", it.toNotes()) }
+    }.trim()
+}
+
+private fun String.toScenePreviewText(reviewReport: ReviewReport?): String {
+    return buildString {
+        appendSection("Scene Draft", this@toScenePreviewText)
+        reviewReport?.let { appendSection("Review", it.toNotes()) }
     }.trim()
 }
 
@@ -2144,6 +2458,7 @@ enum class ConversationRole {
 data class PendingApproval(
     val id: String = UUID.randomUUID().toString(),
     val novelId: String? = null,
+    val targetId: String? = null,
     val targetType: ApprovalTargetType,
     val actionName: String,
     val previewTitle: String,
@@ -2157,6 +2472,9 @@ data class PendingApproval(
 enum class ApprovalTargetType {
     NOVEL_BACKGROUND,
     OUTLINE,
+    CHAPTER_SYNOPSIS,
+    SCENE_TEXT,
+    BIBLE_UPDATE,
     OUTLINE_STRUCTURE_CHANGE,
 }
 
@@ -2175,6 +2493,31 @@ sealed interface ApprovalPayload {
     data class Outline(
         val novelId: String,
         val outline: NovelOutline,
+    ) : ApprovalPayload
+
+    data class ChapterSynopsis(
+        val novelId: String,
+        val chapterId: String,
+        val chapterOrder: Int,
+        val synopsis: com.trirrin.xiaoshuo.model.ChapterSynopsis,
+        val reviewReport: ReviewReport?,
+    ) : ApprovalPayload
+
+    data class SceneText(
+        val novelId: String,
+        val chapterId: String,
+        val sceneId: String,
+        val chapterOrder: Int,
+        val sceneOrder: Int,
+        val text: String,
+        val wordCount: Int,
+        val reviewReport: ReviewReport?,
+        val proposedBible: NovelBible?,
+    ) : ApprovalPayload
+
+    data class BibleUpdate(
+        val novelId: String,
+        val bible: NovelBible,
     ) : ApprovalPayload
 }
 

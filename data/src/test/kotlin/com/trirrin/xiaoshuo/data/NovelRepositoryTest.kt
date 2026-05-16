@@ -208,6 +208,51 @@ class NovelRepositoryTest {
         assertEquals("wounded", savedBible?.conflicts?.single()?.incomingValue)
     }
 
+    @Test
+    fun `conversation approval and audit records roundtrip`() = runTest {
+        val session = ConversationSessionRecord(
+            id = "session-1",
+            novelId = "novel-1",
+            messagesJson = "[{\"role\":\"USER\",\"text\":\"draft chapter 1\"}]",
+            activeToolCallJson = "{\"name\":\"generateChapterSynopsisProposal\"}",
+            createdAt = Instant.fromEpochMilliseconds(1_000),
+            updatedAt = Instant.fromEpochMilliseconds(2_000),
+        )
+        val approval = PendingApprovalRecord(
+            id = "approval-1",
+            novelId = "novel-1",
+            targetType = "CHAPTER_SYNOPSIS",
+            targetId = "chapter-1",
+            actionName = "acceptChapterSynopsisProposal",
+            previewTitle = "Chapter 1",
+            previewText = "Chapter plan preview",
+            proposedPayloadJson = "{\"chapterId\":\"chapter-1\"}",
+            riskLevel = "MEDIUM",
+            requiredBeforeCommit = true,
+            createdAt = Instant.fromEpochMilliseconds(3_000),
+        )
+        val audit = ToolCallAuditRecord(
+            id = "audit-1",
+            sessionId = "session-1",
+            novelId = "novel-1",
+            functionName = "generateChapterSynopsisProposal",
+            argumentSummary = "chapterIndex=1",
+            resultStatus = "proposal_ready",
+            resultMessage = "Chapter plan proposal ready",
+            createdAt = Instant.fromEpochMilliseconds(4_000),
+        )
+
+        repository.saveConversationSession(session)
+        repository.savePendingApproval(approval)
+        repository.saveToolCallAudit(audit)
+
+        assertEquals(session, repository.getConversationSession("session-1"))
+        assertEquals(approval, repository.getPendingApproval("approval-1"))
+        assertEquals(listOf(session), repository.observeConversationSessions().first())
+        assertEquals(listOf(approval), repository.observePendingApprovals().first())
+        assertEquals(listOf(audit), repository.observeToolCallAudits("session-1").first())
+    }
+
     private fun sampleNovel(): Novel {
         return Novel(
             id = "novel-1",

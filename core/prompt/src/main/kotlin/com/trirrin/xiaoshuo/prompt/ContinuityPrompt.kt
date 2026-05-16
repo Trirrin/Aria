@@ -81,26 +81,9 @@ EXTRACTION RULES:
 7. Do NOT add entries for characters that are only mentioned but have no new information revealed.
 8. For character updates, only include if something MEANINGFULLY changed about the character.
 
-OUTPUT FORMAT: Return ONLY a JSON object, no markdown, no extra text:
-{
-  "charactersToAdd": [
-    {"name": "...", "description": "...", "personality": "...", "currentState": "...", "relationships": [{"targetCharacterName": "...", "relationType": "..."}]}
-  ],
-  "charactersToUpdate": [
-    {"name": "...", "updatedState": "...", "reason": "..."}
-  ],
-  "locationsToAdd": [
-    {"name": "...", "description": "...", "significance": "..."}
-  ],
-  "timelineEventsToAdd": [
-    {"description": "..."}
-  ],
-  "worldRulesToAdd": [
-    {"category": "...", "rule": "...", "details": "..."}
-  ]
-}
+OUTPUT FORMAT: Call submitBibleUpdateProposal exactly once with the structured Bible update arguments.
 
-If no changes are needed for a category, return an empty array for that field.
+If no changes are needed for a category, pass an empty array for that field.
 """.trimIndent()
 
     override fun buildUserPrompt(input: ContinuityInput): String = buildString {
@@ -133,7 +116,7 @@ If no changes are needed for a category, return an empty array for that field.
             }
             appendLine()
         }
-        appendLine("Analyze the scene text and return the JSON Bible diff.")
+        appendLine("Analyze the scene text and call the required tool with the Bible diff.")
     }
 
     override fun parseOutput(rawOutput: String): Result<BibleDiff> {

@@ -46,15 +46,7 @@ REVIEW RULES:
 6. Issues must be SPECIFIC and ACTIONABLE. Reference exact moments or elements.
 7. Suggested fixes must include both compliance fixes and quality fixes when either is weak.
 
-OUTPUT FORMAT: Return ONLY a JSON object, no markdown, no extra text:
-{
-  "complianceScore": 8,
-  "qualityScore": 6,
-  "issues": ["Specific compliance issue 1", "Specific compliance issue 2"],
-  "qualityIssues": ["Specific prose issue 1", "Specific prose issue 2"],
-  "suggestedFixes": ["Specific fix 1", "Specific fix 2"],
-  "passed": true
-}
+OUTPUT FORMAT: Call submitSceneReview exactly once with the structured review arguments.
 """.trimIndent()
 
     override fun buildUserPrompt(input: ReviewInput): String = buildString {
@@ -73,7 +65,7 @@ OUTPUT FORMAT: Return ONLY a JSON object, no markdown, no extra text:
             }
             appendLine()
         }
-        appendLine("Evaluate compliance and prose quality, then return the JSON result.")
+        appendLine("Evaluate compliance and prose quality, then call the required tool.")
     }
 
     override fun parseOutput(rawOutput: String): Result<ReviewOutput> {

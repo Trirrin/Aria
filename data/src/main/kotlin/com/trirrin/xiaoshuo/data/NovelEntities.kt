@@ -120,3 +120,40 @@ data class TokenUsageRecordEntity(
     val estimatedCostUsd: Double,
     val createdAtEpochMillis: Long,
 )
+
+@Entity(tableName = "conversation_sessions", indices = [Index("novelId"), Index("updatedAtEpochMillis")])
+data class ConversationSessionEntity(
+    @PrimaryKey val id: String,
+    val novelId: String?,
+    val messagesJson: String,
+    val activeToolCallJson: String?,
+    val createdAtEpochMillis: Long,
+    val updatedAtEpochMillis: Long,
+)
+
+@Entity(tableName = "pending_approvals", indices = [Index("novelId"), Index("targetId"), Index("createdAtEpochMillis")])
+data class PendingApprovalEntity(
+    @PrimaryKey val id: String,
+    val novelId: String?,
+    val targetType: String,
+    val targetId: String?,
+    val actionName: String,
+    val previewTitle: String,
+    val previewText: String,
+    val proposedPayloadJson: String,
+    val riskLevel: String,
+    val requiredBeforeCommit: Boolean,
+    val createdAtEpochMillis: Long,
+)
+
+@Entity(tableName = "tool_call_audits", indices = [Index("sessionId"), Index("novelId"), Index("functionName"), Index("createdAtEpochMillis")])
+data class ToolCallAuditEntity(
+    @PrimaryKey val id: String,
+    val sessionId: String,
+    val novelId: String?,
+    val functionName: String,
+    val argumentSummary: String,
+    val resultStatus: String,
+    val resultMessage: String,
+    val createdAtEpochMillis: Long,
+)

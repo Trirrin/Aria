@@ -91,31 +91,9 @@ class AgentPipelineTest {
     @Test
     fun `pipeline generates scene reviews it and updates bible`() = runTest {
         val llm = QueueLlmClient(
-            "Mira crossed the Ash Gate with the living map pressed to her wounded side.",
-            """
-            {
-              "complianceScore": 8,
-              "qualityScore": 8,
-              "issues": [],
-              "suggestedFixes": [],
-              "passed": true
-            }
-            """.trimIndent(),
-            """
-            {
-              "charactersToAdd": [
-                {"name": "Mira", "description": "A courier", "personality": "defiant", "currentState": "wounded", "relationships": []}
-              ],
-              "charactersToUpdate": [],
-              "locationsToAdd": [
-                {"name": "Ash Gate", "description": "The ruined eastern gate", "significance": "Escape route"}
-              ],
-              "timelineEventsToAdd": [
-                {"description": "Mira crossed the Ash Gate."}
-              ],
-              "worldRulesToAdd": []
-            }
-            """.trimIndent(),
+            textResponse("Mira crossed the Ash Gate with the living map pressed to her wounded side."),
+            toolResponse(SUBMIT_SCENE_REVIEW, passedReviewArguments()),
+            toolResponse(SUBMIT_BIBLE_UPDATE_PROPOSAL, bibleDiffArguments()),
         )
         val filter = BibleFilter(tokenBudget = 500)
         val pipeline = AgentPipeline(
@@ -256,28 +234,14 @@ class AgentPipelineTest {
     @Test
     fun `pipeline finalizes streamed scene without regenerating prose`() = runTest {
         val llm = QueueLlmClient(
-            """
-            {
-              "complianceScore": 9,
-              "qualityScore": 8,
-              "issues": [],
-              "suggestedFixes": [],
-              "passed": true
-            }
-            """.trimIndent(),
-            """
-            {
-              "charactersToAdd": [
-                {"name": "Mira", "description": "A courier", "personality": "stubborn", "currentState": "safe", "relationships": []}
-              ],
-              "charactersToUpdate": [],
-              "locationsToAdd": [],
-              "timelineEventsToAdd": [
-                {"description": "Mira reached the road after crossing the Ash Gate."}
-              ],
-              "worldRulesToAdd": []
-            }
-            """.trimIndent(),
+            toolResponse(SUBMIT_SCENE_REVIEW, passedReviewArguments(score = 9)),
+            toolResponse(
+                SUBMIT_BIBLE_UPDATE_PROPOSAL,
+                bibleDiffArguments(
+                    currentState = "safe",
+                    timelineEvent = "Mira reached the road after crossing the Ash Gate.",
+                ),
+            ),
         )
         val filter = BibleFilter(tokenBudget = 500)
         val pipeline = AgentPipeline(
@@ -329,16 +293,11 @@ class AgentPipelineTest {
     @Test
     fun `pipeline does not update bible when scene review fails`() = runTest {
         val llm = QueueLlmClient(
-            "Mira talks about leaving but never reaches the Ash Gate.",
-            """
-            {
-              "complianceScore": 4,
-              "qualityScore": 8,
-              "issues": ["The scene never crosses the Ash Gate."],
-              "suggestedFixes": ["Add the crossing beat."],
-              "passed": false
-            }
-            """.trimIndent(),
+            textResponse("Mira talks about leaving but never reaches the Ash Gate."),
+            toolResponse(
+                SUBMIT_SCENE_REVIEW,
+                failedReviewArguments(),
+            ),
         )
         val filter = BibleFilter(tokenBudget = 500)
         val pipeline = AgentPipeline(
@@ -382,6 +341,14 @@ class AgentPipelineTest {
         assertEquals(listOf("creative-model", "review-model"), llm.requests.map { it.model })
     }
 }
+
+private fun textResponse(content: String): LlmResponse = LlmResponse(
+    content = content,
+    inputTokens = 10,
+    outputTokens = 20,
+    finishReason = "stop",
+    model = "test-model",
+)
 
 private fun toolResponse(functionName: String, argumentsJson: String): LlmResponse {
     return LlmResponse(
@@ -438,6 +405,47 @@ private fun backgroundArguments(): String = """
     "themes": [],
     "conflicts": []
   }
+}
+""".trimIndent()
+
+private fun passedReviewArguments(score: Int = 8): String = """
+{
+  "complianceScore": $score,
+  "qualityScore": 8,
+  "issues": [],
+  "qualityIssues": [],
+  "suggestedFixes": [],
+  "passed": true
+}
+""".trimIndent()
+
+private fun failedReviewArguments(): String = """
+{
+  "complianceScore": 4,
+  "qualityScore": 8,
+  "issues": ["The scene never crosses the Ash Gate."],
+  "qualityIssues": [],
+  "suggestedFixes": ["Add the crossing beat."],
+  "passed": false
+}
+""".trimIndent()
+
+private fun bibleDiffArguments(
+    currentState: String = "wounded",
+    timelineEvent: String = "Mira crossed the Ash Gate.",
+): String = """
+{
+  "charactersToAdd": [
+    {"name": "Mira", "description": "A courier", "personality": "defiant", "currentState": "$currentState", "relationships": []}
+  ],
+  "charactersToUpdate": [],
+  "locationsToAdd": [
+    {"name": "Ash Gate", "description": "The ruined eastern gate", "significance": "Escape route"}
+  ],
+  "timelineEventsToAdd": [
+    {"description": "$timelineEvent"}
+  ],
+  "worldRulesToAdd": []
 }
 """.trimIndent()
 

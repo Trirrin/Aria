@@ -3,8 +3,10 @@ package com.trirrin.xiaoshuo.agent
 import com.trirrin.xiaoshuo.llm.*
 import com.trirrin.xiaoshuo.model.CharacterEntry
 import com.trirrin.xiaoshuo.prompt.ReviewInput
+import com.trirrin.xiaoshuo.prompt.ReviewOutput
 import com.trirrin.xiaoshuo.prompt.ReviewPrompt
 import com.trirrin.xiaoshuo.prompt.ReviewType
+import kotlinx.serialization.json.Json
 
 class ReviewAgent(
     private val llmClient: LlmClient,
@@ -15,6 +17,7 @@ class ReviewAgent(
     override val description = "Reviews child output for compliance against parent directive"
 
     private val prompt = ReviewPrompt()
+    private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun review(
         parentDirective: String,
@@ -36,6 +39,8 @@ class ReviewAgent(
             maxTokens = 2048,
             temperature = 0.3,
             cacheableSystemPrompt = true,
+            tools = listOf(sceneReviewTool),
+            toolChoice = LlmToolChoice.Named(SUBMIT_SCENE_REVIEW),
         )
 
         val response: LlmResponse = try {
@@ -45,27 +50,24 @@ class ReviewAgent(
         }
 
         val baseUsage = response.toAgentUsage(name, model)
-        return parseOrRepairJsonOutput(
-            rawContent = response.content,
-            llmClient = llmClient,
-            model = model,
-            agentName = name,
-            parse = prompt::parseOutput,
-        ).fold(
-            onSuccess = { (review, repairUsage) ->
-                AgentResult.ReviewResult(
-                    score = review.complianceScore,
-                    issues = review.issues,
-                    suggestedFixes = review.suggestedFixes,
-                    passed = review.passed,
-                    qualityScore = review.qualityScore,
-                    qualityIssues = review.qualityIssues,
-                    usage = baseUsage.plusRepair(repairUsage),
-                )
+        return response.requireSingleToolCallArguments(SUBMIT_SCENE_REVIEW, name).fold(
+            onSuccess = { argumentsJson ->
+                try {
+                    val review = json.decodeFromString(ReviewOutput.serializer(), argumentsJson)
+                    AgentResult.ReviewResult(
+                        score = review.complianceScore,
+                        issues = review.issues,
+                        suggestedFixes = review.suggestedFixes,
+                        passed = review.passed,
+                        qualityScore = review.qualityScore,
+                        qualityIssues = review.qualityIssues,
+                        usage = baseUsage,
+                    )
+                } catch (error: Exception) {
+                    AgentResult.Error("Failed to decode scene review arguments: ${error.message}", error)
+                }
             },
-            onFailure = {
-                AgentResult.Error("Failed to parse review: ${it.message}", it)
-            },
+            onFailure = { AgentResult.Error(it.message ?: "Invalid scene review tool call", it) },
         )
     }
 }

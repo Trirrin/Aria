@@ -33,15 +33,7 @@ Your task is to create a chapter synopsis that:
 
 Each scene should specify its synopsis and target word count (2000-3000 words).
 
-OUTPUT FORMAT: Return ONLY a JSON object, no markdown, no extra text:
-{
-  "chapterGoal": "One sentence describing what this chapter accomplishes",
-  "sceneBreakdowns": [
-    {"sceneIndex": 1, "synopsis": "Detailed scene description with specific beats", "targetWordCount": 2500}
-  ],
-  "chapterEnding": "Description of how this chapter ends",
-  "transitionNotes": "Notes for continuity with the next chapter"
-}
+OUTPUT FORMAT: Call submitChapterSynopsisProposal exactly once with the structured chapter plan arguments.
 """.trimIndent()
 
     override fun buildUserPrompt(input: ChapterSynopsisInput): String = buildString {
@@ -81,7 +73,7 @@ OUTPUT FORMAT: Return ONLY a JSON object, no markdown, no extra text:
             appendLine(it)
             appendLine()
         }
-        appendLine("Generate the chapter synopsis in the specified JSON format.")
+        appendLine("Generate the chapter synopsis by calling the required tool.")
     }
 
     override fun parseOutput(rawOutput: String): Result<ChapterSynopsis> {

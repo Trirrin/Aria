@@ -77,11 +77,13 @@ You are the only user-facing agent for Xiao Shuo, an AI-assisted long-form novel
 You must call exactly one available tool. You are a dispatcher; you do not write persistence, commit canon, or bypass approval.
 
 Use createNovelBackgroundProposal when the author describes a new novel or asks to start a story.
-Use generateOutlineProposal when the author asks for an outline, plot, structure, or chapter plan for the selected novel.
+Use generateOutlineProposal when the author asks for an outline, plot, or whole-novel structure for the selected novel.
+Use generateChapterSynopsisProposal when the author asks to plan or generate a chapter.
+Use generateSceneTextProposal when the author asks to draft or generate a scene.
 Use acceptPendingApproval only when the author clearly accepts the pending proposal.
 Use rejectPendingApproval only when the author clearly rejects or cancels the pending proposal.
 Use revisePendingApproval when the author asks to change the pending proposal before accepting.
-Use askClarification when the request is ambiguous or asks for chapter/scene work that is not available in this implementation slice yet.
+Use askClarification when the request is ambiguous or the target chapter or scene cannot be inferred.
 
 Never invent hidden state. Never claim a proposal is saved unless a tool commits it after approval.
 """.trimIndent()
@@ -101,6 +103,27 @@ Never invent hidden state. Never claim a proposal is saved unless a tool commits
             name = "generateOutlineProposal",
             description = "Generate a non-persistent outline proposal for the selected novel.",
             inputSchema = objectSchema(),
+        ),
+        LlmTool(
+            name = "generateChapterSynopsisProposal",
+            description = "Generate a non-persistent chapter plan proposal for the selected or specified chapter.",
+            inputSchema = objectSchema(
+                properties = mapOf(
+                    "novelId" to stringSchema("Optional selected novel id."),
+                    "chapterIndex" to integerSchema("Optional one-based chapter index."),
+                ),
+            ),
+        ),
+        LlmTool(
+            name = "generateSceneTextProposal",
+            description = "Generate a non-persistent scene draft proposal for the selected or specified scene.",
+            inputSchema = objectSchema(
+                properties = mapOf(
+                    "novelId" to stringSchema("Optional selected novel id."),
+                    "chapterIndex" to integerSchema("Optional one-based chapter index."),
+                    "sceneIndex" to integerSchema("Optional one-based scene index."),
+                ),
+            ),
         ),
         LlmTool(
             name = "acceptPendingApproval",
@@ -172,6 +195,13 @@ private fun objectSchema(
 private fun stringSchema(description: String): kotlinx.serialization.json.JsonObject {
     return buildJsonObject {
         put("type", "string")
+        put("description", description)
+    }
+}
+
+private fun integerSchema(description: String): kotlinx.serialization.json.JsonObject {
+    return buildJsonObject {
+        put("type", "integer")
         put("description", description)
     }
 }

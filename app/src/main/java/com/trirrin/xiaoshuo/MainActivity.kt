@@ -434,6 +434,9 @@ private val ApprovalTargetType.displayLabel: String
     get() = when (this) {
         ApprovalTargetType.NOVEL_BACKGROUND -> "Background"
         ApprovalTargetType.OUTLINE -> "Outline"
+        ApprovalTargetType.CHAPTER_SYNOPSIS -> "Chapter Plan"
+        ApprovalTargetType.SCENE_TEXT -> "Scene Draft"
+        ApprovalTargetType.BIBLE_UPDATE -> "Canon Update"
         ApprovalTargetType.OUTLINE_STRUCTURE_CHANGE -> "Outline structure change"
     }
 
