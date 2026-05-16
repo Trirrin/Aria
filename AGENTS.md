@@ -92,8 +92,6 @@ Not fully implemented:
 - Token/cost tracking.
 - UI/ViewModel tests.
 
-See `Plan.md` for the canonical roadmap.
-
 ## UI Rules
 
 - Build the writing workbench, not a landing page.
